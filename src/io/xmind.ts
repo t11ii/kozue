@@ -2,7 +2,8 @@
 // Modern files are ZIP archives with a `content.json`; Xmind 8 and older
 // use `content.xml`. Both are read; export writes the modern format.
 
-import type { DocData, LayoutKind, NodeData, RelData } from '../core/model.ts';
+import type { DocData, LayoutKind, MapStyle, NodeData, RelData, Shape, TopicStyle } from '../core/model.ts';
+import { cleanStyle, cleanWidth } from '../core/model.ts';
 import type { XmlEl } from './xml.ts';
 import { childOf, childrenOf, findEl, parseXml } from './xml.ts';
 import { unzip, zip } from './zip.ts';
@@ -11,6 +12,8 @@ export interface XmindImport {
   root: NodeData;
   layout: LayoutKind;
   relationships?: RelData[];
+  /** The sheet's own background. */
+  style?: MapStyle;
   /** Number of sheets in the file (only the first is imported). */
   sheets: number;
 }
@@ -142,11 +145,102 @@ function applyExtras(n: NodeData, x: Extras, isRoot: boolean): void {
   if (kids.length && !n.children) n.children = kids;
 }
 
-// ------------------------------------------------------------ content.json
-
 type Json = Record<string, unknown>;
 const obj = (v: unknown): Json => (v && typeof v === 'object' ? (v as Json) : {});
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+// ------------------------------------------------------------------ styles
+// Xmind describes the look of a topic with a list of properties. Kozue reads and
+// writes the ones it has a counterpart for (on a best-effort basis: what a theme
+// gives a topic without saying so in the file is not carried over).
+
+const SHAPE_CLASSES: Record<Shape, string> = {
+  rounded: 'org.xmind.topicShape.roundedRect',
+  rect: 'org.xmind.topicShape.rect',
+  pill: 'org.xmind.topicShape.ellipserect',
+  ellipse: 'org.xmind.topicShape.ellipse',
+  diamond: 'org.xmind.topicShape.diamond',
+  underline: 'org.xmind.topicShape.underline',
+  none: 'org.xmind.topicShape.noBorder',
+};
+
+function shapeOf(v: unknown): Shape | undefined {
+  const s = typeof v === 'string' ? v.toLowerCase() : '';
+  if (!s.includes('topicshape')) return undefined;
+  if (s.includes('underline')) return 'underline';
+  if (s.includes('noborder')) return 'none';
+  if (s.includes('diamond')) return 'diamond';
+  if (s.includes('ellipserect') || s.includes('ellipticrect')) return 'pill';
+  if (s.includes('ellipse') || s.includes('circle')) return 'ellipse';
+  if (s.includes('roundedrect')) return 'rounded';
+  if (s.endsWith('.rect') || s.includes('rectangle')) return 'rect';
+  return undefined; // one of the many shapes Kozue does not have: the theme decides
+}
+
+/** `#rgb`, `#rrggbb` or `#rrggbbaa` → `#rrggbb`; `none` for "none" or a fully transparent color. */
+function colorOf(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const raw = v.trim().toLowerCase();
+  if (raw === 'none') return 'none';
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(raw);
+  if (!m) return undefined;
+  let h = m[1];
+  if (h.length === 3) h = h.replace(/./g, '$&$&');
+  if (h.length === 8) {
+    if (h.endsWith('00')) return 'none';
+    h = h.slice(0, 6);
+  }
+  return '#' + h;
+}
+
+function styleFrom(props: Json): TopicStyle | undefined {
+  const s: Record<string, unknown> = {};
+  const shape = shapeOf(props['shape-class']);
+  if (shape) s.shape = shape;
+  const fill = colorOf(props['svg:fill']);
+  if (fill !== undefined) s.fill = fill;
+  const border = colorOf(props['border-line-color']);
+  if (border !== undefined && border !== 'none' && parseFloat(String(props['border-line-width'] ?? '1')) !== 0) s.border = border;
+  const color = colorOf(props['fo:color']);
+  if (color !== undefined && color !== 'none') s.color = color;
+  const weight = String(props['fo:font-weight'] ?? '').toLowerCase();
+  if (weight === 'bold' || Number(weight) >= 600) s.bold = true;
+  else if (weight === 'normal' || (weight !== '' && Number(weight) <= 500)) s.bold = false;
+  if (String(props['fo:font-style'] ?? '').toLowerCase() === 'italic') s.italic = true;
+  if (
+    String(props['fo:text-decoration'] ?? '')
+      .toLowerCase()
+      .includes('line-through')
+  )
+    s.strike = true;
+  const size = parseFloat(String(props['fo:font-size'] ?? ''));
+  if (Number.isFinite(size) && size > 0) s.size = size;
+  return cleanStyle(s);
+}
+
+function styleTo(st: TopicStyle): Json {
+  const p: Json = {};
+  if (st.shape) p['shape-class'] = SHAPE_CLASSES[st.shape];
+  if (st.fill) p['svg:fill'] = st.fill;
+  if (st.border) {
+    p['border-line-color'] = st.border;
+    p['border-line-width'] = '2pt';
+  }
+  if (st.color) p['fo:color'] = st.color;
+  if (st.bold !== undefined) p['fo:font-weight'] = st.bold ? 'bold' : 'normal';
+  if (st.italic) p['fo:font-style'] = 'italic';
+  if (st.strike) p['fo:text-decoration'] = 'line-through';
+  if (st.size !== undefined) p['fo:font-size'] = st.size + 'pt';
+  return p;
+}
+
+/** The background a sheet was given, if it is a plain color. */
+function mapStyleFrom(props: Json): MapStyle | undefined {
+  const bg = colorOf(props['svg:fill']);
+  return bg !== undefined && bg !== 'none' ? { background: bg } : undefined;
+}
+
+// ------------------------------------------------------------ content.json
 
 /**
  * @param ends ids of the topics that relationships connect; those keep their id
@@ -168,6 +262,10 @@ function fromJsonTopic(raw: unknown, ends: ReadonlySet<string>, isRoot = false):
     const status = obj(ext).provider === TASK ? obj(obj(ext).content).status : undefined;
     if (status === 'done' || status === 'todo') n.todo = status === 'done';
   }
+  const style = styleFrom(obj(obj(t.style).properties));
+  if (style) n.style = style;
+  const width = cleanWidth(t.customWidth);
+  if (width !== undefined) n.width = width;
   const children = obj(t.children);
   const kids = arr(children.attached);
   if (kids.length) {
@@ -227,14 +325,41 @@ function fromJson(text: string): XmindImport {
       }
     }
   }
-  return { root, layout, sheets: sheets.length, ...(relationships.length ? { relationships } : {}) };
+  const style = mapStyleFrom(obj(obj(sheet.style).properties));
+  return { root, layout, sheets: sheets.length, ...(relationships.length ? { relationships } : {}), ...(style ? { style } : {}) };
 }
 
 // ------------------------------------------------------------- content.xml
 
-function fromXmlTopic(el: XmlEl, ends: ReadonlySet<string>, isRoot = false): NodeData {
+/** Styles of an Xmind 8 file by id: they live in a file of their own (styles.xml). */
+type XmlStyles = ReadonlyMap<string, Json>;
+
+function readXmlStyles(text: string | undefined): XmlStyles {
+  const styles = new Map<string, Json>();
+  if (!text) return styles;
+  const visit = (el: XmlEl): void => {
+    if (el.name === 'style' && el.attrs.id) {
+      const props = el.children.find((c) => c.name.endsWith('-properties'));
+      if (props) styles.set(el.attrs.id, props.attrs);
+    }
+    for (const c of el.children) visit(c);
+  };
+  try {
+    visit(parseXml(text));
+  } catch {
+    /* a map without its styles is still a map */
+  }
+  return styles;
+}
+
+function fromXmlTopic(el: XmlEl, ends: ReadonlySet<string>, styles: XmlStyles, isRoot = false): NodeData {
   const n: NodeData = { text: cleanTitle(childOf(el, 'title')?.text) };
   if (el.attrs.id && ends.has(el.attrs.id)) n.id = el.attrs.id;
+  const props = el.attrs['style-id'] ? styles.get(el.attrs['style-id']) : undefined;
+  const style = props ? styleFrom(props) : undefined;
+  if (style) n.style = style;
+  const width = el.attrs['svg:width'] ? cleanWidth(parseFloat(el.attrs['svg:width'])) : undefined;
+  if (width !== undefined) n.width = width;
   const note = childOf(childOf(el, 'notes'), 'plain')?.text.trim();
   if (note) n.note = note.replace(/\r\n?/g, '\n');
   const link = webLink(el.attrs['xlink:href']);
@@ -250,9 +375,9 @@ function fromXmlTopic(el: XmlEl, ends: ReadonlySet<string>, isRoot = false): Nod
   for (const group of childrenOf(childOf(el, 'children'), 'topics')) {
     // Floating topics (only the central topic has them) are kept as ordinary children.
     if (group.attrs.type === 'attached' || group.attrs.type === 'detached') {
-      for (const t of childrenOf(group, 'topic')) kids.push(fromXmlTopic(t, ends));
+      for (const t of childrenOf(group, 'topic')) kids.push(fromXmlTopic(t, ends, styles));
     } else if (group.attrs.type === 'summary') {
-      for (const t of childrenOf(group, 'topic')) summaryTopics.set(t.attrs.id, fromXmlTopic(t, ends));
+      for (const t of childrenOf(group, 'topic')) summaryTopics.set(t.attrs.id, fromXmlTopic(t, ends, styles));
     }
   }
   if (kids.length) {
@@ -283,7 +408,8 @@ function fromXmlTopic(el: XmlEl, ends: ReadonlySet<string>, isRoot = false): Nod
   return n;
 }
 
-function fromXml(text: string): XmindImport {
+function fromXml(text: string, stylesText?: string): XmindImport {
+  const styles = readXmlStyles(stylesText);
   const doc = parseXml(text);
   const content = findEl(doc, 'xmap-content');
   const sheets = childrenOf(content, 'sheet');
@@ -296,23 +422,27 @@ function fromXml(text: string): XmindImport {
     relationships.push(title ? { from: r.attrs.end1, to: r.attrs.end2, text: title } : { from: r.attrs.end1, to: r.attrs.end2 });
   }
   const ends = new Set(relationships.flatMap((r) => [r.from, r.to]));
-  const root = fromXmlTopic(topic, ends, true);
+  const root = fromXmlTopic(topic, ends, styles, true);
   delete root.collapsed;
+  const sheetProps = sheets[0].attrs['style-id'] ? styles.get(sheets[0].attrs['style-id']) : undefined;
+  const style = sheetProps ? mapStyleFrom(sheetProps) : undefined;
   return {
     root,
     layout: layoutOf(topic.attrs['structure-class']),
     sheets: sheets.length,
     ...(relationships.length ? { relationships } : {}),
+    ...(style ? { style } : {}),
   };
 }
 
 export async function parseXmind(bytes: Uint8Array): Promise<XmindImport> {
-  const files = await unzip(bytes, (name) => name === 'content.json' || name === 'content.xml');
+  const files = await unzip(bytes, (name) => name === 'content.json' || name === 'content.xml' || name === 'styles.xml');
   const dec = new TextDecoder();
   const json = files.get('content.json');
   if (json) return fromJson(dec.decode(json));
   const xml = files.get('content.xml');
-  if (xml) return fromXml(dec.decode(xml));
+  const styles = files.get('styles.xml');
+  if (xml) return fromXml(dec.decode(xml), styles ? dec.decode(styles) : undefined);
   throw new Error('Not an Xmind file');
 }
 
@@ -338,6 +468,8 @@ function toJsonTopic(n: NodeData, ids: Map<string, string>): Json {
   if (n.labels?.length) t.labels = n.labels.slice();
   if (n.todo !== undefined) t.extensions = [{ provider: TASK, content: { status: n.todo ? 'done' : 'todo' } }];
   if (n.structure !== undefined) t.structureClass = STRUCTURES[n.structure];
+  if (n.style) t.style = { id: newId(), properties: styleTo(n.style) };
+  if (n.width !== undefined) t.customWidth = n.width;
   if (n.children?.length) {
     // Xmind keeps summary topics apart from the ordinary children and frames by ranges of those.
     const attached: Json[] = [];
@@ -418,6 +550,7 @@ export async function toXmind(doc: DocData, appVersion: string): Promise<Uint8Ar
     relationships.push(r.text ? { id: newId(), end1Id, end2Id, title: r.text } : { id: newId(), end1Id, end2Id });
   }
   if (relationships.length) sheet.relationships = relationships;
+  if (doc.style?.background) sheet.style = { id: newId(), properties: { 'svg:fill': doc.style.background } };
   const content = [sheet];
   const enc = new TextEncoder();
   return zip([

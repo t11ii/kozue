@@ -464,6 +464,24 @@ export class Chrome {
         this.item(node.collapsed ? 'expand' : 'collapse', 'toggleCollapse', 'mod+/', { disabled: !foldable }),
         this.item(app.focus === node ? 'showAll' : 'focusBranch', 'focusBranch', 'mod+;', { disabled: isRoot || !single }),
         {
+          label: t('style'),
+          submenu: [
+            this.item('important', 'important', 'mod+shift+1', { checked: app.hasQuickStyle('important') }),
+            this.item('crossed', 'crossed', 'mod+shift+2', { checked: app.hasQuickStyle('crossed') }),
+            SEP,
+            this.item('bold', 'bold', 'mod+b', { checked: app.sel.every((n) => app.isBold(n)) }),
+            this.item('italic', 'italic', 'mod+shift+i', { checked: app.sel.every((n) => n.style?.italic === true) }),
+            this.item('strike', 'strike', 'mod+shift+x', { checked: app.sel.every((n) => n.style?.strike === true) }),
+            SEP,
+            this.item('copyStyle', 'copyStyle', 'mod+alt+c', { disabled: !single, checked: false }),
+            this.item('pasteStyle', 'pasteStyle', 'mod+alt+v', { disabled: !app.canPasteStyle, checked: false }),
+            this.item('styleToLevel', 'styleToLevel', undefined, { disabled: !single, checked: false }),
+            SEP,
+            this.item('resetStyle', 'resetStyle', undefined, { disabled: app.sel.every((n) => n.style === undefined), checked: false }),
+            this.item('styleMore', 'editStyle', undefined, { checked: false }),
+          ],
+        },
+        {
           label: t('branchStructure'),
           disabled: isRoot,
           submenu: [

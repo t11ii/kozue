@@ -62,6 +62,25 @@ export const icons = {
   focus: svg('<circle cx="10" cy="10" r="2.4"/><path d="M10 2.8v2.6M10 14.6v2.6M2.8 10h2.6M14.6 10h2.6"/>'),
   filter: svg('<path d="M3.5 5h13l-5 6v4.2l-3-1.4V11z"/>'),
   swap: svg('<path d="M4 7h11.5M12.5 4l3 3-3 3M16 13H4.5M7.5 10l-3 3 3 3"/>'),
+  reset: svg('<path d="M4.5 10a5.5 5.5 0 1 0 1.7-4"/><path d="M4.2 3.4v3h3"/>'),
+  star: svg('<path d="m10 3.2 2 4.3 4.6.6-3.4 3.2.9 4.6L10 13.6l-4.1 2.3.9-4.6L3.4 8.1 8 7.5z"/>'),
+  strike: svg(
+    '<path d="M3.5 10h13"/><path d="M13.4 6.6C13 5.3 11.7 4.5 10 4.5c-2 0-3.4 1-3.4 2.6 0 .8.4 1.5 1.1 1.9M6.4 13.2c.4 1.4 1.8 2.3 3.6 2.3 2.1 0 3.6-1.1 3.6-2.8 0-.3 0-.5-.1-.7"/>',
+  ),
+  copyStyle: svg(
+    '<rect x="3.5" y="3.5" width="9" height="5" rx="1.3"/><path d="M12.5 6h2.5a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 1-1.5 1.5h-3.5a1.5 1.5 0 0 0-1.5 1.5v.5"/>' +
+      '<rect x="8.8" y="12" width="2.4" height="5" rx=".8"/>',
+  ),
+  levels: svg(
+    '<rect x="3" y="8" width="4" height="4" rx="1.1"/><path d="M7 10h3M10 5v10M10 5h2.5M10 10h2.5M10 15h2.5"/><path d="M13 3.8h4v2.4h-4zM13 8.8h4v2.4h-4zM13 13.8h4v2.4h-4z"/>',
+  ),
+  shapeRounded: svg('<rect x="3" y="5.5" width="14" height="9" rx="3"/>'),
+  shapeRect: svg('<rect x="3" y="5.5" width="14" height="9"/>'),
+  shapePill: svg('<rect x="2.5" y="6" width="15" height="8" rx="4"/>'),
+  shapeEllipse: svg('<ellipse cx="10" cy="10" rx="7.3" ry="4.8"/>'),
+  shapeDiamond: svg('<path d="M10 4.2 17.5 10 10 15.8 2.5 10z"/>'),
+  shapeUnderline: svg('<path d="M5.5 9h9" stroke-opacity=".45"/><path d="M3 13.5h14"/>'),
+  shapeNone: svg('<path d="M5 8h10M5 12h6.5" stroke-opacity=".7"/>'),
   trash: svg('<path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 9.5h6.6L14 6M8.6 8.6v4.4M11.4 8.6v4.4"/>'),
   structMap: svg(MAP),
   structLogic: svg(LOGIC),

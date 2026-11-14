@@ -54,10 +54,14 @@ import {
   MARK,
   MARK_GAP,
   MARK_STEP,
+  ROUNDED,
   SUB_BOX_PAD_X,
   SUM_GAP,
   TODO_STEP,
+  fontIn,
+  lineHeightOf,
   resolveColor,
+  topicFont,
 } from './themes.ts';
 
 export interface FontMetrics {
@@ -139,16 +143,23 @@ const NO_LABELS: LabelBox[] = [];
 function measureNode(n: MNode, c: Ctx): void {
   const lv = n.lv;
   const m = LEVELS[lv];
+  const st = n.style;
+  const f = topicFont(lv, st, c.theme.typeface);
+  const lh = lineHeightOf(lv, st);
+  n.font = f;
+  n.lh = lh;
+  // A width set by hand is the width of the text block: the text wraps at it and the box keeps it.
+  const fixed = n.width;
   let tw: number;
   let th: number;
   if (c.editing && c.editing.node === n) {
     tw = c.editing.tw;
     th = c.editing.th;
   } else {
-    const blk = wrapText(n.text, m.maxWidth, (s) => c.measurer.width(m.font, s));
+    const blk = wrapText(n.text, fixed ?? m.maxWidth, (s) => c.measurer.width(f, s));
     n.lines = blk.lines;
     tw = blk.width;
-    th = blk.lines.length * m.lineHeight;
+    th = blk.lines.length * lh;
     n.mVer = n.ver;
     n.mLv = lv;
     n.mEpoch = c.epoch;
@@ -158,39 +169,87 @@ function measureNode(n: MNode, c: Ctx): void {
   const mkW = marks ? marks * MARK_STEP - (MARK_STEP - MARK) + MARK_GAP : 0;
   const tdW = n.todo !== undefined ? TODO_STEP : 0;
   const icons = (n.note ? 1 : 0) + (n.link ? 1 : 0);
-  const padX = lv === 2 && n.box ? SUB_BOX_PAD_X : m.padX;
-  tw = Math.max(Math.ceil(tw), lv === 0 ? 48 : 18);
+  tw = fixed ?? Math.max(Math.ceil(tw), lv === 0 ? 48 : 18);
   const rowW = tdW + mkW + tw + icons * ICON_STEP;
   const rowH = Math.max(th, marks || tdW ? MARK : 0);
 
   // Label chips go under the text, wrapping when they would get wider than it.
+  // Their positions are relative to the content here and move into the box below.
   let labW = 0;
   let labH = 0;
+  let boxes: LabelBox[] = NO_LABELS;
   if (n.labels && n.labels.length) {
+    const labelFont = fontIn(LABEL_FONT, c.theme.typeface);
     const maxW = Math.max(rowW, 150);
-    const boxes: LabelBox[] = [];
+    boxes = [];
     let x = 0;
     let y = 0;
     for (const text of n.labels) {
-      const w = Math.ceil(c.measurer.width(LABEL_FONT, text)) + LABEL_PAD * 2;
+      const w = Math.ceil(c.measurer.width(labelFont, text)) + LABEL_PAD * 2;
       if (x > 0 && x + w > maxW) {
         x = 0;
         y += LABEL_H + LABEL_ROW_GAP;
       }
-      boxes.push({ x: padX + x, y: m.padY + rowH + LABEL_TOP + y, w, text });
+      boxes.push({ x, y: rowH + LABEL_TOP + y, w, text });
       x += w + LABEL_GAP;
       if (x - LABEL_GAP > labW) labW = x - LABEL_GAP;
     }
     labH = y + LABEL_H;
-    n.lab = boxes;
-  } else n.lab = NO_LABELS;
+  }
 
+  // The content (text row and labels) and the room its outline needs around it.
+  const cw = Math.max(rowW, labW);
+  const ch = rowH + (labH ? LABEL_TOP + labH : 0);
+  // Without a box, a topic of the top two levels needs little room beside its text.
+  let padX = lv === 2 ? (n.box ? SUB_BOX_PAD_X : m.padX) : n.box ? m.padX : 8;
+  let padY = m.padY;
+  let rad = m.radius;
+  switch (n.shp) {
+    case 'rounded':
+      // By default a central topic with a single line is a capsule.
+      if (st?.shape === 'rounded') rad = ROUNDED[lv];
+      else if (lv === 0 && ch <= lh) rad = ch / 2 + padY;
+      break;
+    case 'rect':
+      rad = 0;
+      break;
+    case 'pill': {
+      rad = ch / 2 + padY;
+      // Keep the corners of the content clear of the round ends.
+      const need = rad - Math.sqrt(Math.max(0, 2 * rad * padY - padY * padY)) + 2;
+      if (need > padX) padX = need;
+      break;
+    }
+    case 'ellipse': {
+      // The content's corners lie inside the ellipse.
+      const ry = (ch / 2) * 1.42 + 3;
+      const rx = (cw / 2 + 2) / Math.sqrt(1 - (ch / 2 / ry) ** 2);
+      padX = rx - cw / 2;
+      padY = ry - ch / 2;
+      break;
+    }
+    case 'diamond': {
+      const ry = ch * 1.05 + 4;
+      const rx = (cw / 2 + 2) / (1 - ch / 2 / ry);
+      padX = rx - cw / 2;
+      padY = ry - ch / 2;
+      break;
+    }
+  }
+  for (const b of boxes) {
+    b.x += padX;
+    b.y += padY;
+  }
+  n.lab = boxes;
   n.tw = tw;
   n.th = th;
-  n.w = padX * 2 + Math.max(rowW, labW);
-  n.h = rowH + (labH ? LABEL_TOP + labH : 0) + m.padY * 2;
+  n.w = cw + padX * 2;
+  n.h = ch + padY * 2;
   n.tx = padX + tdW + mkW;
-  n.ty = m.padY + (rowH - th) / 2;
+  n.ty = padY + (rowH - th) / 2;
+  n.rad = rad;
+  // In a round outline, and in a box wider than its text, the lines sit in the middle.
+  n.tc = n.box && (n.shp === 'ellipse' || n.shp === 'diamond' || fixed !== undefined);
 }
 
 /**
@@ -213,9 +272,26 @@ function prepare(n: MNode, depth: number, rdepth: number, kind: LayoutKind, dir:
     crd = 0;
   }
   n.cdir = childArrangement(ck, crd, dir, index);
-  // Subtopics in a row or on an axis need a box; elsewhere the theme decides.
-  n.box = lv === 2 && (c.theme.sub === 'tint' || isRow(dir) || isAxis(dir) || isSpine(dir));
-  n.ul = lv === 2 && !n.box && c.theme.sub === 'underline' && kind !== 'brace';
+  // The top two levels are boxes. Subtopics in a row or on an axis need one too; elsewhere the theme decides.
+  let box = lv < 2 || c.theme.sub === 'tint' || isRow(dir) || isAxis(dir) || isSpine(dir);
+  let ul = !box && c.theme.sub === 'underline' && kind !== 'brace';
+  // The topic's own style has the last word.
+  const st = n.style;
+  const shape = st?.shape;
+  if (shape === 'underline' || shape === 'none') {
+    box = false;
+    ul = shape === 'underline';
+  } else if (
+    shape !== undefined ||
+    (!box && st !== undefined && ((st.fill !== undefined && st.fill !== 'none') || st.border !== undefined))
+  ) {
+    // A shape, a fill or an outline needs a box to show.
+    box = true;
+    ul = false;
+  }
+  n.box = box;
+  n.ul = ul;
+  n.shp = !box ? (ul ? 'underline' : 'none') : shape !== undefined && shape !== 'underline' && shape !== 'none' ? shape : 'rounded';
   n.branch = branch;
   n.fresh = n.stamp !== c.stamp - 1;
   n.stamp = c.stamp;

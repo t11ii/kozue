@@ -296,6 +296,58 @@ fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<tauri::menu::Menu<ta
         )?)
         .build()?;
 
+    let style = SubmenuBuilder::new(app, t("Style", "スタイル"))
+        .item(&item(
+            "important",
+            t("Important", "重要"),
+            Some("CmdOrCtrl+Shift+1"),
+        )?)
+        .item(&item(
+            "crossed",
+            t("Crossed Out", "取り消し"),
+            Some("CmdOrCtrl+Shift+2"),
+        )?)
+        .separator()
+        .item(&item("bold", t("Bold", "太字"), Some("CmdOrCtrl+B"))?)
+        .item(&item(
+            "italic",
+            t("Italic", "斜体"),
+            Some("CmdOrCtrl+Shift+I"),
+        )?)
+        .item(&item(
+            "strike",
+            t("Strikethrough", "取り消し線"),
+            Some("CmdOrCtrl+Shift+X"),
+        )?)
+        .separator()
+        .item(&item(
+            "copyStyle",
+            t("Copy Style", "スタイルをコピー"),
+            Some("CmdOrCtrl+Alt+C"),
+        )?)
+        .item(&item(
+            "pasteStyle",
+            t("Paste Style", "スタイルをペースト"),
+            Some("CmdOrCtrl+Alt+V"),
+        )?)
+        .item(&item(
+            "styleToLevel",
+            t("Apply to Same Level", "同じ階層のトピックに適用"),
+            None,
+        )?)
+        .separator()
+        .item(&item(
+            "resetStyle",
+            t("Reset Style", "スタイルをリセット"),
+            None,
+        )?)
+        .item(&item(
+            "editStyle",
+            t("More Styles…", "スタイルを設定…"),
+            None,
+        )?)
+        .build()?;
+
     let topic = SubmenuBuilder::new(app, t("Topic", "トピック"))
         .item(&item("addSibling", t("Add Topic", "トピックを追加"), None)?)
         .item(&item(
@@ -334,6 +386,7 @@ fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<tauri::menu::Menu<ta
             t("Link…", "リンク…"),
             Some("CmdOrCtrl+K"),
         )?)
+        .item(&style)
         .separator()
         .item(&item(
             "toggleCollapse",

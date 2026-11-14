@@ -230,6 +230,20 @@ export class Dialogs {
         ],
       ],
       [
+        'style',
+        [
+          ['important', [k('mod+shift+1')]],
+          ['crossed', [k('mod+shift+2')]],
+          ['bold', [k('mod+b')]],
+          ['italic', [k('mod+shift+i')]],
+          ['strike', [k('mod+shift+x')]],
+          ['copyStyle', [k('mod+alt+c')]],
+          ['pasteStyle', [k('mod+alt+v')]],
+          ['scWidth', [t('keyEdgeDrag')]],
+          ['scWidthReset', [t('keyEdgeDouble')]],
+        ],
+      ],
+      [
         'scNavigate',
         [
           ['scSelect', [t('keyArrows')]],

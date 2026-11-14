@@ -1,7 +1,7 @@
 // Document lifecycle: new / open / save / export, session restore and
 // the list of recently used files.
 
-import type { DocData, NodeData, RelData } from '../core/model.ts';
+import type { DocData, MapStyle, NodeData, RelData } from '../core/model.ts';
 import { Doc, MNode } from '../core/model.ts';
 import { DEFAULT_THEME, themeById } from '../core/themes.ts';
 import { getLang, t } from '../i18n.ts';
@@ -108,7 +108,7 @@ export function rememberTheme(id: string): void {
   store.set(THEME_KEY, id);
 }
 
-function docFromData(data: { root: NodeData; theme?: string; layout?: string; relationships?: RelData[] }): Doc {
+function docFromData(data: { root: NodeData; theme?: string; layout?: string; relationships?: RelData[]; style?: MapStyle }): Doc {
   const theme = themeById(data.theme ?? preferredTheme());
   return Doc.fromData({ ...data, theme: theme.id }, theme.id, theme.palette.length);
 }
@@ -145,6 +145,7 @@ export function welcomeDoc(): Doc {
           n('6 つのテーマ'),
           n('12 の構造', n('マインドマップ・ロジック'), n('組織図・ツリー'), n('タイムライン・フィッシュボーン')),
           n('ブランチごとの色と構造'),
+          { text: '形・色・文字のスタイル', style: { shape: 'pill', fill: '#ffe08a' } },
         ),
         n(
           'ファイル',
@@ -189,6 +190,7 @@ export function welcomeDoc(): Doc {
           n('6 themes'),
           n('12 structures', n('Mind map, logic chart'), n('Org chart, tree'), n('Timeline, fishbone')),
           n('Colors and structures per branch'),
+          { text: 'Shapes, colors and text styles', style: { shape: 'pill', fill: '#ffe08a' } },
         ),
         n(
           'Files',

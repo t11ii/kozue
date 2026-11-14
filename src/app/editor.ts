@@ -4,7 +4,7 @@
 // transformed to sit exactly over the topic's text on the canvas.
 
 import type { MNode } from '../core/model.ts';
-import { FONT_STACK, LEVELS, styleFor } from '../core/themes.ts';
+import { LEVELS, nodeStyle } from '../core/themes.ts';
 import type { App } from './app.ts';
 
 export type EditMode = 'replace' | 'append' | 'all';
@@ -71,15 +71,8 @@ export class TextEditor {
     }
     const app = this.app;
     if (!app.isVisible(node)) return;
-    const m = LEVELS[node.lv];
-    const st = styleFor(app.theme, node.lv, node.branch, node.box);
-    const css = `${m.font.weight} ${m.font.size}px/${m.lineHeight}px ${FONT_STACK}`;
     const el = this.el;
-    el.style.font = css;
-    el.style.color = st.text;
-    el.style.caretColor = st.text;
-    this.mirror.style.font = css;
-    this.mirror.style.maxWidth = m.maxWidth + 'px';
+    this.dress(node);
     if (mode !== 'replace') el.value = node.text;
     el.classList.remove('idle');
     this.state = { node, isNew, original: node.text };
@@ -90,6 +83,30 @@ export class TextEditor {
     app.relayout(true);
     app.reveal(node);
     app.emit('edit');
+  }
+
+  /** Gives the text field the font, color, alignment and wrapping width of `node` as it was last laid out. */
+  private dress(node: MNode): void {
+    const f = node.font;
+    const st = nodeStyle(this.app.theme, node.lv, node.branch, node.box, node.style);
+    const css = `${f.italic ? 'italic ' : ''}${f.weight} ${f.size}px/${node.lh}px ${f.family}`;
+    const el = this.el;
+    el.style.font = css;
+    el.style.color = st.text;
+    el.style.caretColor = st.text;
+    el.style.textAlign = node.tc ? 'center' : '';
+    el.style.textDecoration = node.style?.strike ? 'line-through' : '';
+    this.mirror.style.font = css;
+    this.mirror.style.maxWidth = (node.width ?? LEVELS[node.lv].maxWidth) + 'px';
+  }
+
+  /** The look of the topic being edited changed (and it was laid out again): follow it. */
+  restyle(): void {
+    const s = this.state;
+    if (!s) return;
+    this.dress(s.node);
+    this.resize();
+    this.app.relayout(true);
   }
 
   /** Applies the edited text. */
@@ -161,23 +178,28 @@ export class TextEditor {
     el.classList.add('idle');
     el.style.width = '';
     el.style.height = '';
+    el.style.textAlign = '';
+    el.style.textDecoration = '';
   }
 
   /** Sizes the textarea (and the node on the canvas) to the current text. */
   private resize(): void {
     const s = this.state;
     if (!s) return;
-    const m = LEVELS[s.node.lv];
+    const node = s.node;
     const value = this.el.value;
     this.mirror.textContent = value + '​';
     const r = this.mirror.getBoundingClientRect();
-    const wrapped = r.width >= m.maxWidth - 0.5;
-    let tw = wrapped ? m.maxWidth : Math.ceil(r.width) + 1;
-    if (!value) tw = Math.max(tw, 40);
-    const th = Math.max(m.lineHeight, Math.round(r.height));
-    this.el.style.width = (wrapped ? m.maxWidth : tw + 2) + 'px';
+    // A topic with a width of its own keeps it; otherwise the field grows with the text until it wraps.
+    const fixed = node.width !== undefined;
+    const maxWidth = node.width ?? LEVELS[node.lv].maxWidth;
+    const wrapped = fixed || r.width >= maxWidth - 0.5;
+    let tw = wrapped ? maxWidth : Math.ceil(r.width) + 1;
+    if (!value && !fixed) tw = Math.max(tw, 40);
+    const th = Math.max(node.lh, Math.round(r.height));
+    this.el.style.width = (wrapped ? maxWidth : tw + 2) + 'px';
     this.el.style.height = th + 'px';
-    this.layoutEdit = { node: s.node, tw, th };
+    this.layoutEdit = { node, tw, th };
   }
 
   private onInput(): void {

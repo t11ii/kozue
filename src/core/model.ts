@@ -2,6 +2,7 @@
 
 import { MARKER_IDS } from './markers.ts';
 import { LAYOUT_KINDS } from './structures.ts';
+import type { Font } from './themes.ts';
 
 export type Side = 'l' | 'r';
 export type LayoutKind =
@@ -19,6 +20,43 @@ export type LayoutKind =
   | 'fishbone-right';
 /** A palette index (theme-relative) or an explicit `#rrggbb` color. */
 export type ColorRef = number | string;
+
+/** The outline of a topic. */
+export type Shape = 'rounded' | 'rect' | 'pill' | 'ellipse' | 'diamond' | 'underline' | 'none';
+export const SHAPES: readonly Shape[] = ['rounded', 'rect', 'pill', 'ellipse', 'diamond', 'underline', 'none'];
+
+/**
+ * How one topic looks where it departs from the theme. Every field is optional.
+ * A style object is never changed in place: a new one replaces it.
+ */
+export interface TopicStyle {
+  shape?: Shape;
+  /** Fill of the box: `#rrggbb`, or `none` for an outline without a fill. */
+  fill?: string;
+  /** Color of the outline (`#rrggbb`). */
+  border?: string;
+  /** Color of the text (`#rrggbb`). */
+  color?: string;
+  /** Heavier (true) or lighter (false) than topics of this level normally are. */
+  bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
+  /** Font size in px. */
+  size?: number;
+}
+
+export type FontKind = 'sans' | 'serif' | 'round' | 'mono';
+export const FONT_KINDS: readonly FontKind[] = ['sans', 'serif', 'round', 'mono'];
+
+/** Settings of the whole map that override its theme. */
+export interface MapStyle {
+  /** Color of the canvas (`#rrggbb`). */
+  background?: string;
+  /** Thickness of the branch lines, relative to the theme's (1 = as designed). */
+  line?: number;
+  /** Typeface of all text on the map. */
+  font?: FontKind;
+}
 
 /** Plain, serializable form of a topic. */
 export interface NodeData {
@@ -38,6 +76,9 @@ export interface NodeData {
   boundary?: string;
   /** A summary topic: the number of preceding siblings it sums up. */
   summary?: number;
+  style?: TopicStyle;
+  /** Width of the text block in px, when it was set by hand (the text wraps at it). */
+  width?: number;
   /** Stable id; only written for topics that a relationship refers to. */
   id?: string;
   children?: NodeData[];
@@ -57,6 +98,7 @@ export interface DocData {
   version: number;
   theme: string;
   layout: LayoutKind;
+  style?: MapStyle;
   root: NodeData;
   relationships?: RelData[];
 }
@@ -73,6 +115,8 @@ export const FORMAT_VERSION = 1;
 
 const NO_LINES: string[] = [];
 const NO_LABELS: LabelBox[] = [];
+/** Stands in until the layout has chosen a topic's font. */
+const NO_FONT: Font = { size: 14, weight: 400, italic: false, family: 'sans-serif', css: '400 14px sans-serif' };
 let idSeq = 0;
 
 export class MNode {
@@ -99,6 +143,10 @@ export class MNode {
   sum: number | undefined = undefined;
   /** Stable id used by relationships in saved files. */
   ref: string | undefined = undefined;
+  /** The topic's own look; undefined follows the theme. */
+  style: TopicStyle | undefined = undefined;
+  /** Width of the text block when set by hand; undefined sizes the topic to its text. */
+  width: number | undefined = undefined;
 
   /** Bumped whenever something that affects the measured size changes. */
   ver = 0;
@@ -116,6 +164,11 @@ export class MNode {
   th = 0;
   tx = 0; // text block offset inside the box
   ty = 0;
+  font: Font = NO_FONT; // typeface, size and weight of the text
+  lh = 20; // line height
+  shp: Shape = 'none'; // the outline that is drawn
+  rad = 0; // corner radius of that outline
+  tc = false; // the lines are centered in the text block
 
   // ---- layout result (owned by layout) ----
   depth = 0;
@@ -123,8 +176,8 @@ export class MNode {
   dir = 0; // how the parent placed this node (an arrangement code from structures.ts; 0 for the root)
   cdir = 0; // the arrangement this node uses for its own children
   pk: LayoutKind = 'map'; // the structure that placed this node
-  box = false; // a subtopic drawn as a box
-  ul = false; // a subtopic drawn on an underline
+  box = false; // drawn as a box (with a fill and / or an outline)
+  ul = false; // drawn on an underline
   sumN = 0; // active summary topic: number of siblings it brackets (0 otherwise)
   cover: MNode | null = null; // the summary topic that brackets this node
   idx = 0; // position among its siblings
@@ -183,16 +236,30 @@ export class Rel {
 }
 
 export type PropKey =
-  'text' | 'side' | 'color' | 'collapsed' | 'markers' | 'note' | 'link' | 'labels' | 'todo' | 'structure' | 'boundary' | 'sum';
+  | 'text'
+  | 'side'
+  | 'color'
+  | 'collapsed'
+  | 'markers'
+  | 'note'
+  | 'link'
+  | 'labels'
+  | 'todo'
+  | 'structure'
+  | 'boundary'
+  | 'sum'
+  | 'style'
+  | 'width';
 export type RelKey = 'from' | 'to' | 'text' | 'bend';
 export type MetaKey = 'theme' | 'layout';
-const MEASURED: ReadonlySet<PropKey> = new Set<PropKey>(['text', 'markers', 'note', 'link', 'labels', 'todo']);
+const MEASURED: ReadonlySet<PropKey> = new Set<PropKey>(['text', 'markers', 'note', 'link', 'labels', 'todo', 'style', 'width']);
 
 export type Op =
   | { k: 'ins'; node: MNode; parent: MNode; index: number }
   | { k: 'del'; node: MNode; parent: MNode; index: number }
   | { k: 'set'; node: MNode; key: PropKey; from: unknown; to: unknown }
   | { k: 'meta'; key: MetaKey; from: string; to: string }
+  | { k: 'look'; from: MapStyle; to: MapStyle }
   | { k: 'radd'; rel: Rel; index: number }
   | { k: 'rdel'; rel: Rel; index: number }
   | { k: 'rset'; rel: Rel; key: RelKey; from: unknown; to: unknown };
@@ -220,6 +287,8 @@ export class Doc {
   root: MNode;
   theme: string;
   layout: LayoutKind;
+  /** The map's own background, line thickness and typeface; replaced as a whole, never changed in place. */
+  style: MapStyle = {};
   rels: Rel[] = [];
   undoStack: Txn[] = [];
   redoStack: Txn[] = [];
@@ -299,6 +368,8 @@ export class Doc {
           last.to = op.to;
         } else if (op.k === 'rset' && last && last.k === 'rset' && last.rel === op.rel && last.key === op.key) {
           last.to = op.to;
+        } else if (op.k === 'look' && last && last.k === 'look') {
+          last.to = op.to;
         } else {
           top.ops.push(op);
         }
@@ -355,6 +426,9 @@ export class Doc {
       case 'meta':
         if (op.key === 'theme') this.theme = invert ? op.from : op.to;
         else this.layout = (invert ? op.from : op.to) as LayoutKind;
+        break;
+      case 'look':
+        this.style = invert ? op.from : op.to;
         break;
       case 'radd':
       case 'rdel': {
@@ -429,6 +503,15 @@ export class Doc {
     else this.layout = value as LayoutKind;
   }
 
+  /** Replaces the map's own settings (background, line thickness, typeface). */
+  setStyle(next: MapStyle): void {
+    const from = this.style;
+    const to = cleanMapStyle(next);
+    if (JSON.stringify(from) === JSON.stringify(to)) return;
+    this.log({ k: 'look', from, to });
+    this.style = to;
+  }
+
   addRel(rel: Rel): void {
     if (this.rels.includes(rel)) return;
     this.log({ k: 'radd', rel, index: this.rels.length });
@@ -483,6 +566,7 @@ export class Doc {
       version: FORMAT_VERSION,
       theme: this.theme,
       layout: this.layout,
+      ...(Object.keys(this.style).length ? { style: { ...this.style } } : {}),
       root: toData(this.root, ends),
     };
     if (rels.length) {
@@ -511,6 +595,7 @@ export class Doc {
     const layout = LAYOUT_KINDS.includes(d.layout as LayoutKind) ? (d.layout as LayoutKind) : 'map';
     const theme = typeof d.theme === 'string' && d.theme ? d.theme : fallbackTheme;
     const doc = new Doc(root, theme, layout);
+    doc.style = cleanMapStyle(d.style);
     if (Array.isArray(d.relationships)) {
       for (const raw of d.relationships as unknown[]) {
         const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
@@ -547,6 +632,8 @@ export function toData(n: MNode, ids?: ReadonlySet<MNode>): NodeData {
   if (n.structure !== undefined) d.structure = n.structure;
   if (n.boundary !== undefined) d.boundary = n.boundary;
   if (n.sum !== undefined) d.summary = n.sum;
+  if (n.style) d.style = { ...n.style };
+  if (n.width !== undefined) d.width = n.width;
   if (n.children.length) d.children = n.children.map((c) => toData(c, ids));
   return d;
 }
@@ -557,6 +644,54 @@ export const MAX_LABELS = 12;
 export const MAX_LABEL = 40;
 export const MAX_TITLE = 120;
 export const MAX_BEND = 800;
+export const MIN_SIZE = 8;
+export const MAX_SIZE = 72;
+export const MIN_WIDTH = 24;
+export const MAX_WIDTH = 1200;
+export const MIN_LINE = 0.4;
+export const MAX_LINE = 3;
+
+const hex = (v: unknown): string | undefined => (typeof v === 'string' && HEX.test(v) ? v.toLowerCase() : undefined);
+
+/** A topic style built from untrusted data: only known fields with valid values; undefined when nothing is left. */
+export function cleanStyle(raw: unknown): TopicStyle | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const s: TopicStyle = {};
+  if (SHAPES.includes(r.shape as Shape)) s.shape = r.shape as Shape;
+  const fill = r.fill === 'none' ? 'none' : hex(r.fill);
+  if (fill !== undefined) s.fill = fill;
+  const border = hex(r.border);
+  if (border !== undefined) s.border = border;
+  const color = hex(r.color);
+  if (color !== undefined) s.color = color;
+  if (typeof r.bold === 'boolean') s.bold = r.bold;
+  if (r.italic === true) s.italic = true;
+  if (r.strike === true) s.strike = true;
+  if (typeof r.size === 'number' && Number.isFinite(r.size)) s.size = Math.max(MIN_SIZE, Math.min(MAX_SIZE, Math.round(r.size)));
+  return Object.keys(s).length ? s : undefined;
+}
+
+/** The hand-set width of a topic's text block, from untrusted data. */
+export function cleanWidth(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(raw)));
+}
+
+/** Map settings built from untrusted data; values that say nothing new (line 1, the default typeface) are dropped. */
+export function cleanMapStyle(raw: unknown): MapStyle {
+  const s: MapStyle = {};
+  if (!raw || typeof raw !== 'object') return s;
+  const r = raw as Record<string, unknown>;
+  const background = hex(r.background);
+  if (background !== undefined) s.background = background;
+  if (typeof r.line === 'number' && Number.isFinite(r.line)) {
+    const line = Math.round(Math.max(MIN_LINE, Math.min(MAX_LINE, r.line)) * 100) / 100;
+    if (line !== 1) s.line = line;
+  }
+  if (r.font !== 'sans' && FONT_KINDS.includes(r.font as FontKind)) s.font = r.font as FontKind;
+  return s;
+}
 
 /** Trims, de-duplicates and bounds a list of labels; undefined when nothing is left. */
 export function cleanLabels(list: readonly unknown[]): string[] | undefined {
@@ -596,6 +731,8 @@ export function fromData(data: unknown, byId?: Map<string, MNode>): MNode {
   if (d.structure !== 'map' && LAYOUT_KINDS.includes(d.structure as LayoutKind)) n.structure = d.structure as LayoutKind;
   if (typeof d.boundary === 'string') n.boundary = d.boundary.replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE);
   if (typeof d.summary === 'number' && Number.isInteger(d.summary) && d.summary >= 1) n.sum = d.summary;
+  n.style = cleanStyle(d.style);
+  n.width = cleanWidth(d.width);
   if (Array.isArray(d.children)) {
     for (const c of d.children) {
       const k = fromData(c, byId);

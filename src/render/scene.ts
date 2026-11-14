@@ -33,7 +33,6 @@ import {
   LABEL_FONT,
   LABEL_H,
   LABEL_PAD,
-  LEVELS,
   LOGIC_STEM,
   MARK,
   MARK_GAP,
@@ -42,12 +41,13 @@ import {
   TODO,
   TODO_STEP,
   font,
+  fontIn,
   mix,
-  styleFor,
+  nodeStyle,
 } from '../core/themes.ts';
 import { drawLinkIcon, drawMarker, drawNoteIcon } from './markers.ts';
 import type { Painter } from './painter.ts';
-import { circle, roundRect } from './painter.ts';
+import { circle, diamond, ellipse, roundRect } from './painter.ts';
 
 export interface SceneOpts {
   theme: Theme;
@@ -103,6 +103,8 @@ const sums: MNode[] = [];
 const loose: MNode[] = [];
 /** The topic the scene is drawn from: the central topic, or a branch shown on its own. */
 let vroot: MNode | null = null;
+/** Thickness of the branch lines in the scene being drawn, relative to the theme's. */
+let ls = 1;
 
 const alphaOf = (n: MNode): number => n.aa * (n.dim ? 0.3 : 1) * (n.fade ? FADE : 1);
 
@@ -123,9 +125,49 @@ function collect(n: MNode, o: SceneOpts, dim: boolean): void {
   }
 }
 
+/** The y at which the outline of `n` passes world x, on its lower (`below`) or upper side. */
+function outlineY(n: MNode, x: number, below: boolean): number {
+  const s = below ? 1 : -1;
+  const hw = n.w / 2;
+  const hh = n.h / 2;
+  const cy = n.ay + hh;
+  const dx = Math.min(hw, Math.abs(x - (n.ax + hw)));
+  switch (n.shp) {
+    case 'ellipse':
+      return cy + s * hh * Math.sqrt(1 - (dx / hw) ** 2);
+    case 'diamond':
+      return cy + s * hh * (1 - dx / hw);
+    case 'rounded':
+    case 'pill': {
+      const r = Math.min(n.rad, hw, hh);
+      const inset = hw - dx; // distance from the nearer side
+      return inset >= r ? cy + s * hh : cy + s * (hh - r + Math.sqrt(r * r - (r - inset) ** 2));
+    }
+    default:
+      return cy + s * hh;
+  }
+}
+
+/** Appends the outline of `n`, `g` units larger all around, to the current path. */
+export function outlinePath(p: Painter, n: MNode, g = 0): void {
+  const x = n.ax - g;
+  const y = n.ay - g;
+  const w = n.w + g * 2;
+  const h = n.h + g * 2;
+  if (n.shp === 'ellipse') ellipse(p, x + w / 2, y + h / 2, w / 2, h / 2);
+  else if (n.shp === 'diamond') {
+    // Grown so that its sides stay parallel to the topic's.
+    const d = g * Math.hypot(n.w, n.h);
+    diamond(p, x + w / 2, y + h / 2, n.w / 2 + d / n.h, n.h / 2 + d / n.w);
+  } else roundRect(p, x, y, w, h, n.rad + g);
+}
+
 /** Where the bone of a fishbone main topic meets the topic (or the branch it carries). */
 export function boneAnchor(n: MNode): [number, number] {
-  return [n.ax + n.w / 2 + n.bax, n.ay + n.h / 2 + n.bay];
+  const x = n.ax + n.w / 2 + n.bax;
+  // On the topic itself (rather than on the corner of the branch it carries) the bone ends at the outline.
+  if (Math.abs(Math.abs(n.bay) - n.h / 2) < 0.5 && Math.abs(n.bax) <= n.w / 2) return [x, outlineY(n, x, n.bay > 0)];
+  return [x, n.ay + n.h / 2 + n.bay];
 }
 
 /** The height at which a connector meets `n`: its underline, or the middle of its box. */
@@ -139,8 +181,9 @@ export function childAnchor(n: MNode): [number, number] {
   if (isTree(c)) {
     const t = treeTrunk(n.lv, n.ul);
     const down = c === A_TREE_DR || c === A_TREE_DL;
+    const x = c > 0 ? n.ax + t : n.ax + n.w - t;
     // An underlined topic's trunk always starts from the end of its underline.
-    return [c > 0 ? n.ax + t : n.ax + n.w - t, down || n.ul ? n.ay + n.h : n.ay];
+    return [x, outlineY(n, x, down || n.ul)];
   }
   if (isRibs(c) && isSpine(n.dir)) return boneAnchor(n);
   return [c < 0 ? n.ax : n.ax + n.w, attachY(n)];
@@ -176,7 +219,7 @@ export function togglePos(n: MNode): [number, number] {
 export function todoBox(n: MNode): [number, number, number] {
   const marks = n.markers ? n.markers.length : 0;
   const mkW = marks ? marks * MARK_STEP - (MARK_STEP - MARK) + MARK_GAP : 0;
-  return [n.ax + n.tx - mkW - TODO_STEP, n.ay + n.ty + (LEVELS[n.lv].lineHeight - TODO) / 2, TODO];
+  return [n.ax + n.tx - mkW - TODO_STEP, n.ay + n.ty + (n.lh - TODO) / 2, TODO];
 }
 
 /** Outline of a boundary frame: x, y, width, height. */
@@ -290,7 +333,7 @@ function sideEdge(p: Painter, q: MNode, n: MNode, o: SceneOpts): void {
     // an upright at its end. Line and upright are shared, so drawStem() draws them once;
     // each branch adds its own corner and run.
     const jx = (d > 0 ? q.ax + q.w : q.ax) + d * LOGIC_STEM;
-    const y0 = q.ay + q.h / 2;
+    const y0 = attachY(q);
     const dy = y1 - y0;
     if (Math.abs(dy) < 0.5) {
       p.moveTo(jx, y0);
@@ -303,11 +346,12 @@ function sideEdge(p: Painter, q: MNode, n: MNode, o: SceneOpts): void {
       p.lineTo(x1, y1);
     }
   } else if (q.lv === 0) {
-    // Root branches fan out from the center of the root topic.
-    const cx = q.ax + q.w / 2;
-    const cy = q.ay + q.h / 2;
+    // Root branches fan out from the center of the root topic — or from its edge,
+    // when it has no box that would hide where they meet.
+    const cx = q.box ? q.ax + q.w / 2 : d > 0 ? q.ax + q.w : q.ax;
+    const cy = q.box ? q.ay + q.h / 2 : attachY(q);
     const kx = cx + (x1 - cx) * 0.36;
-    if (o.theme.taper && n.pk === 'map') taperPath(p, cx, cy, kx, y1, x1, y1, TAPER_FROM, TAPER_TO);
+    if (o.theme.taper && n.pk === 'map') taperPath(p, cx, cy, kx, y1, x1, y1, TAPER_FROM * ls, TAPER_TO * ls);
     else {
       p.moveTo(cx, cy);
       p.quadTo(kx, y1, x1, y1);
@@ -444,6 +488,21 @@ function edgePath(p: Painter, n: MNode, o: SceneOpts): void {
 }
 
 /**
+ * True when the connector of `n` runs on under its text as the underline of an
+ * underlined topic. Where it does not (no connector, or one that ends at the
+ * topic), drawBody() draws the underline. Must agree with the paths above.
+ */
+function edgeUnderlines(n: MNode): boolean {
+  const q = n.parent;
+  if (!q || n === vroot) return false;
+  if (n.sumN > 0) return !isRow(n.dir); // bracketPath()
+  if (n.pk === 'brace') return false;
+  const d = n.dir;
+  if (isTree(d) || isRibs(d)) return true;
+  return isSide(d) && (q.lv !== 0 || isLogic(n.pk));
+}
+
+/**
  * How the connector of `n` is painted: 0 = filled taper, 1…3 = stroke of
  * decreasing width, -1 = no connector of its own.
  */
@@ -497,7 +556,7 @@ function drawEdges(p: Painter, o: SceneOpts): void {
     p.beginPath();
     for (const n of b.nodes) edgePath(p, n, o);
     if (b.cls === 0) p.fill(b.color, b.fade ? FADE : 1);
-    else p.stroke(b.color, EDGE_WIDTH[b.cls], b.fade ? FADE : 1);
+    else p.stroke(b.color, EDGE_WIDTH[b.cls] * ls, b.fade ? FADE : 1);
   }
   for (const n of loose) {
     const cls = edgeClass(n, o);
@@ -505,12 +564,12 @@ function drawEdges(p: Painter, o: SceneOpts): void {
     p.beginPath();
     edgePath(p, n, o);
     if (cls === 0) p.fill(color, alphaOf(n));
-    else p.stroke(color, EDGE_WIDTH[cls], alphaOf(n));
+    else p.stroke(color, EDGE_WIDTH[cls] * ls, alphaOf(n));
   }
   for (const s of sums) {
     p.beginPath();
     bracketPath(p, s);
-    p.stroke(s.branch, W_SUB + 0.2, alphaOf(s));
+    p.stroke(s.branch, (W_SUB + 0.2) * ls, alphaOf(s));
   }
 }
 
@@ -553,14 +612,14 @@ function drawBackbone(p: Painter, n: MNode, o: SceneOpts): void {
     p.lineTo(end, cy);
     p.lineTo(end + s * 9, cy + 9);
   }
-  p.stroke(color, n.lv === 0 ? W_SPINE : W_MAIN + 0.4, a);
+  p.stroke(color, (n.lv === 0 ? W_SPINE : W_MAIN + 0.4) * ls, a);
 }
 
 /** Logic chart: the straight line out of the central topic and the upright that the branches part from. */
 function drawStem(p: Painter, q: MNode, o: SceneOpts): void {
   const d = q.cdir < 0 ? -1 : 1;
   const x0 = d > 0 ? q.ax + q.w : q.ax;
-  const y0 = q.ay + q.h / 2;
+  const y0 = attachY(q);
   const jx = x0 + d * LOGIC_STEM;
   let top = y0;
   let bottom = y0;
@@ -580,28 +639,23 @@ function drawStem(p: Painter, q: MNode, o: SceneOpts): void {
     p.moveTo(jx, top);
     p.lineTo(jx, bottom);
   }
-  p.stroke(o.theme.root.fill, W_ROOT, alphaOf(q));
+  p.stroke(o.theme.root.fill, W_ROOT * ls, alphaOf(q));
 }
 
 /** What a branch shown on its own keeps of the connector that normally reaches it. */
 function drawLoneRoot(p: Painter, r: MNode): void {
-  if (!r.parent) return;
-  const bone = isRibs(r.cdir) && isSpine(r.dir);
-  if (!bone && !r.ul) return;
+  // Its ribs hang on the bone, which runs to where the spine would be. (An underline is drawn by drawBody().)
+  if (!r.parent || !(isRibs(r.cdir) && isSpine(r.dir))) return;
   p.beginPath();
-  // Its ribs hang on the bone, which runs to where the spine would be.
-  if (bone) boneLine(p, r, r.ay + r.h / 2 - r.ry);
-  if (r.ul) {
-    p.moveTo(r.ax, r.ay + r.h);
-    p.lineTo(r.ax + r.w, r.ay + r.h);
-  }
-  p.stroke(r.branch, bone ? W_ROOT : W_SUB, alphaOf(r));
+  boneLine(p, r, r.ay + r.h / 2 - r.ry);
+  p.stroke(r.branch, W_ROOT * ls, alphaOf(r));
 }
 
 // --------------------------------------------------------------- boundaries
 
 function drawFrames(p: Painter, o: SceneOpts): void {
   const titles = o.zoom * FRAME_FONT.size >= LOD_PX;
+  const titleFont = fontIn(FRAME_FONT, o.theme.typeface);
   for (const n of frames) {
     const a = alphaOf(n);
     const [x, y, w, h] = frameRect(n);
@@ -612,7 +666,7 @@ function drawFrames(p: Painter, o: SceneOpts): void {
     if (n.boundary && titles) {
       // The title sits in the top corner, or — for a fishbone topic below the spine — away from the spine.
       const low = isSpine(n.dir) && isRibs(n.cdir) && !aboveSpine(n);
-      p.text(n.boundary, x + 11, low ? y + h - 7.5 : y + 15.5, FRAME_FONT, mix(n.branch, o.theme.text, 0.4), 'left', a);
+      p.text(n.boundary, x + 11, low ? y + h - 7.5 : y + 15.5, titleFont, mix(n.branch, o.theme.text, 0.4), 'left', a);
     }
   }
 }
@@ -639,7 +693,10 @@ export function edgePoint(n: MNode, tx: number, ty: number, gap: number): [numbe
   const hw = n.w / 2 + gap;
   const hh = n.h / 2 + gap;
   if (dx === 0 && dy === 0) return [cx + hw, cy];
-  const k = Math.min(dx !== 0 ? hw / Math.abs(dx) : Infinity, dy !== 0 ? hh / Math.abs(dy) : Infinity);
+  let k: number;
+  if (n.shp === 'ellipse') k = 1 / Math.hypot(dx / hw, dy / hh);
+  else if (n.shp === 'diamond') k = 1 / (Math.abs(dx) / hw + Math.abs(dy) / hh);
+  else k = Math.min(dx !== 0 ? hw / Math.abs(dx) : Infinity, dy !== 0 ? hh / Math.abs(dy) : Infinity);
   return [cx + dx * k, cy + dy * k];
 }
 
@@ -690,6 +747,7 @@ export function relLabel(r: Rel): string {
 
 function drawRels(p: Painter, o: SceneOpts): void {
   const ink = o.theme.text;
+  const relFont = fontIn(REL_FONT, o.theme.typeface);
   for (const r of o.rels) {
     const a = r.from;
     const b = r.to;
@@ -729,12 +787,12 @@ function drawRels(p: Painter, o: SceneOpts): void {
     const label = relLabel(r);
     const [mx, my] = curvePoint(c, 0.5);
     if (label && o.zoom * REL_FONT.size >= LOD_PX) {
-      const w = o.textWidth(REL_FONT, label) + 14;
+      const w = o.textWidth(relFont, label) + 14;
       p.beginPath();
       roundRect(p, mx - w / 2, my - 11, w, 22, 7);
       p.fill(o.theme.bg, alpha * 0.94);
       p.stroke(color, 1, alpha * (sel ? 0.9 : 0.28));
-      p.text(label, mx, my + 4.2, REL_FONT, color, 'center', alpha * (sel ? 1 : 0.9));
+      p.text(label, mx, my + 4.2, relFont, color, 'center', alpha * (sel ? 1 : 0.9));
     } else if (sel) {
       // A handle in the middle shows where to drag to bend the line.
       p.beginPath();
@@ -747,35 +805,66 @@ function drawRels(p: Painter, o: SceneOpts): void {
 
 // -------------------------------------------------------------------- nodes
 
+/** Width of the line a topic is underlined with: that of the connector that reaches it. */
+const underlineWidth = (n: MNode): number => (n.lv === 0 ? W_SPINE : n.lv === 1 ? W_ROOT : n.depth === 2 ? W_MAIN : W_SUB) * ls;
+
 function drawBody(p: Painter, n: MNode, o: SceneOpts): void {
   const a = alphaOf(n);
-  const lv = n.lv;
-  const m = LEVELS[lv];
-  const st = styleFor(o.theme, lv, n.branch, n.box);
+  const st = nodeStyle(o.theme, n.lv, n.branch, n.box, n.style);
   const x = n.ax;
   const y = n.ay;
-  if (st.fill || st.stroke) {
-    const r = lv === 0 && n.h <= m.lineHeight + m.padY * 2 ? n.h / 2 : m.radius;
+  if (n.box && (st.fill || st.stroke)) {
     p.beginPath();
-    roundRect(p, x, y, n.w, n.h, r);
+    outlinePath(p, n);
     if (st.fill) p.fill(st.fill, a);
-    if (st.stroke) p.stroke(st.stroke, lv === 0 ? 2 : 1.6, a);
+    if (st.stroke) p.stroke(st.stroke, n.lv === 0 ? 2 : 1.6, a);
+  } else {
+    if (isAxis(n.dir)) {
+      // The axis of a timeline runs behind this topic: keep it off the text.
+      p.beginPath();
+      roundRect(p, x, y, n.w, n.h, n.rad);
+      p.fill(o.theme.bg, a);
+    }
+    if (n.ul && !edgeUnderlines(n)) {
+      p.beginPath();
+      p.moveTo(x, y + n.h);
+      p.lineTo(x + n.w, y + n.h);
+      p.stroke(n.branch, underlineWidth(n), a);
+    }
   }
   if (n === o.editing) return;
   // A finished to-do steps back.
   const ta = n.todo === true ? a * 0.5 : a;
-  if (o.zoom * m.font.size < LOD_PX) {
+  const f = n.font;
+  if (o.zoom * f.size < LOD_PX) {
     const bh = Math.max(2, n.th * 0.3);
     p.beginPath();
     roundRect(p, x + n.tx, y + n.ty + n.th / 2 - bh / 2, n.tw, bh, 1.5);
     p.fill(st.text, ta * 0.32);
     return;
   }
-  const fm = o.metrics(m.font);
-  const base = y + n.ty + (m.lineHeight - (fm.ascent + fm.descent)) / 2 + fm.ascent;
+  const fm = o.metrics(f);
+  const lh = n.lh;
+  const base = y + n.ty + (lh - (fm.ascent + fm.descent)) / 2 + fm.ascent;
   const lines = n.lines;
+  const mid = x + n.tx + n.tw / 2;
+  const align = n.tc ? 'center' : 'left';
+  const tx = n.tc ? mid : x + n.tx;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i]) p.text(lines[i], x + n.tx, base + i * m.lineHeight, m.font, st.text, 'left', ta);
+    if (lines[i]) p.text(lines[i], tx, base + i * lh, f, st.text, align, ta);
+  }
+  if (n.style?.strike) {
+    // Struck through line by line, at the height of the middle of the small letters.
+    p.beginPath();
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i]) continue;
+      const w = o.textWidth(f, lines[i]);
+      const x0 = n.tc ? mid - w / 2 : x + n.tx;
+      const sy = base + i * lh - f.size * 0.32;
+      p.moveTo(x0, sy);
+      p.lineTo(x0 + w, sy);
+    }
+    p.stroke(st.text, Math.max(1, f.size / 13), ta);
   }
 }
 
@@ -784,9 +873,9 @@ const hasDecor = (n: MNode): boolean =>
 
 function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
   const a = alphaOf(n);
-  const m = LEVELS[n.lv];
-  const st = styleFor(o.theme, n.lv, n.branch, n.box);
-  const lod = o.zoom * m.font.size < LOD_PX;
+  const lh = n.lh;
+  const st = nodeStyle(o.theme, n.lv, n.branch, n.box, n.style);
+  const lod = o.zoom * n.font.size < LOD_PX;
   if (!lod) {
     if (n.todo !== undefined) {
       const [bx, by, s] = todoBox(n);
@@ -804,9 +893,9 @@ function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
     if (n.markers) {
       const count = n.markers.length;
       let mx = n.ax + n.tx - (count * MARK_STEP - (MARK_STEP - MARK) + MARK_GAP);
-      const my = n.ay + n.ty + (m.lineHeight - MARK) / 2;
+      const my = n.ay + n.ty + (lh - MARK) / 2;
       // On a solid fill, plain glyphs need a light backdrop to stay readable.
-      const plate = n.lv === 1 && o.theme.main === 'solid';
+      const plate = st.plate;
       for (const id of n.markers) {
         if (plate) {
           p.beginPath();
@@ -819,7 +908,7 @@ function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
     }
     if (n.note || n.link) {
       let ix = n.ax + n.tx + n.tw + (ICON_STEP - ICON);
-      const iy = n.ay + n.ty + (m.lineHeight - ICON) / 2;
+      const iy = n.ay + n.ty + (lh - ICON) / 2;
       if (n.note) {
         drawNoteIcon(p, ix, iy, ICON, st.text, a * 0.6);
         ix += ICON_STEP;
@@ -828,11 +917,12 @@ function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
     }
     if (n.lab.length && o.zoom * LABEL_FONT.size >= LOD_PX) {
       // On a colored box the chips have to be a little stronger to show.
-      const chip = st.fill && n.lv < 2 ? 0.2 : 0.1;
+      const chip = st.fill && (n.lv < 2 || st.plate) ? 0.2 : 0.1;
+      const labelFont = fontIn(LABEL_FONT, o.theme.typeface);
       p.beginPath();
       for (const b of n.lab) roundRect(p, n.ax + b.x, n.ay + b.y, b.w, LABEL_H, 5);
       p.fill(st.text, a * chip);
-      for (const b of n.lab) p.text(b.text, n.ax + b.x + LABEL_PAD, n.ay + b.y + 12.2, LABEL_FONT, st.text, 'left', a * 0.8);
+      for (const b of n.lab) p.text(b.text, n.ax + b.x + LABEL_PAD, n.ay + b.y + 12.2, labelFont, st.text, 'left', a * 0.8);
     }
   }
   if (n.hidden > 0) {
@@ -845,7 +935,7 @@ function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
       p.beginPath();
       p.moveTo(sx, sy);
       p.lineTo(sx + (tx - sx) * k, sy + (ty - sy) * k);
-      p.stroke(n.branch, W_SUB, a);
+      p.stroke(n.branch, W_SUB * ls, a);
     }
     p.beginPath();
     circle(p, tx, ty, TOGGLE_R);
@@ -860,10 +950,8 @@ function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
 
 function drawHighlight(p: Painter, n: MNode, o: SceneOpts): void {
   const current = n === o.markCurrent;
-  const m = LEVELS[n.lv];
-  const r = (n.lv === 0 && n.h <= m.lineHeight + m.padY * 2 ? n.h / 2 : m.radius) + 3;
   p.beginPath();
-  roundRect(p, n.ax - 3, n.ay - 3, n.w + 6, n.h + 6, r);
+  outlinePath(p, n, 3);
   p.fill(HILITE, current ? 0.5 : 0.24);
   if (current) p.stroke(HILITE, 2);
 }
@@ -875,6 +963,7 @@ export function drawScene(p: Painter, root: MNode, o: SceneOpts): void {
   L0.length = L1.length = L2.length = 0;
   frames.length = spines.length = stems.length = sums.length = 0;
   vroot = root;
+  ls = o.theme.lineScale ?? 1;
   collect(root, o, false);
 
   drawFrames(p, o);

@@ -126,6 +126,35 @@ export async function runSelfTest(app: App, dir: string): Promise<void> {
     app.toggleFilter('todo', 'done');
     check('filter', app.filterCount >= 1);
     app.setFilter(null);
+
+    // Topic styles, a width set by hand and the map's own settings, in this web view.
+    const styled = root.children[0];
+    app.select([styled]);
+    app.patchStyle({ shape: 'ellipse', fill: '#ffe08a' });
+    app.toggleFlag('italic');
+    app.toggleFlag('strike');
+    app.setWidth(180);
+    check('style and width', styled.shp === 'ellipse' && styled.tw === 180 && styled.font.italic && styled.tc);
+    app.setMapStyle({ background: '#1f2330', font: 'serif', line: 1.6 });
+    check('map settings', app.theme.dark && app.theme.bg === '#1f2330' && app.theme.lineScale === 1.6);
+    const styledSvg = sceneToSvg(app.exportScene());
+    check('styles are drawn', styledSvg.includes('font-style="italic"') && styledSvg.includes('#ffe08a') && styledSvg.includes('Mincho'));
+    const styledPng = await sceneToPng(app.exportScene(), { scale: 1 });
+    await write('selftest-style.png', styledPng.bytes);
+    const styledBack = await importFile('styled.xmind', await toXmind(app.doc.toData(), 'selftest'));
+    const mainBack = styledBack.root.children?.find((k) => k.text === styled.text);
+    check(
+      'xmind keeps styles',
+      mainBack?.style?.shape === 'ellipse' && mainBack.width === 180 && styledBack.style?.background === '#1f2330',
+    );
+    // Text measured in the DOM (the editor) and on the canvas must agree for the styled font too.
+    app.editor.begin(styled, 'all');
+    const editFont = app.editor.el.style.font;
+    app.editor.cancel();
+    check('editor follows the style', /italic/.test(editFont) && app.editor.state === null);
+    for (let i = 0; i < 5; i++) app.doc.undo();
+    check('styles undone', styled.style === undefined && styled.width === undefined && Object.keys(app.doc.style).length === 0);
+    report.style = { png: styledPng.bytes.length, editFont };
     report.exports = {
       png: png.bytes.length,
       pdf: pdf.bytes.length,

@@ -1,6 +1,6 @@
 // File format registry: detection, import to plain document data, text export.
 
-import type { DocData, LayoutKind, NodeData, RelData } from '../core/model.ts';
+import type { DocData, LayoutKind, MapStyle, NodeData, RelData } from '../core/model.ts';
 import { parseFreemind, parseOpml, toOpml } from './opml.ts';
 import { forestToRoot, parseOutline, toMarkdown, toOutline } from './outline.ts';
 import { parseXmind } from './xmind.ts';
@@ -12,6 +12,8 @@ export interface Imported {
   layout?: LayoutKind;
   theme?: string;
   relationships?: RelData[];
+  /** The map's own settings (background, line thickness, typeface). */
+  style?: MapStyle;
   /** True for Kozue's own format (the file can be saved back in place). */
   native: boolean;
   /** Sheets in the source file, when it had more than the one imported. */
@@ -36,7 +38,7 @@ function parseNative(text: string): Imported {
   if (!data || typeof data !== 'object' || data.format !== 'kozue' || !data.root) {
     throw new Error('Not a Kozue document');
   }
-  return { root: data.root, layout: data.layout, theme: data.theme, relationships: data.relationships, native: true };
+  return { root: data.root, layout: data.layout, theme: data.theme, relationships: data.relationships, style: data.style, native: true };
 }
 
 export async function importFile(name: string, bytes: Uint8Array): Promise<Imported> {
@@ -45,7 +47,14 @@ export async function importFile(name: string, bytes: Uint8Array): Promise<Impor
   if (isZip) ext = 'xmind';
   if (ext === 'xmind') {
     const x = await parseXmind(bytes);
-    return { root: x.root, layout: x.layout, relationships: x.relationships, native: false, sheets: x.sheets > 1 ? x.sheets : undefined };
+    return {
+      root: x.root,
+      layout: x.layout,
+      relationships: x.relationships,
+      style: x.style,
+      native: false,
+      sheets: x.sheets > 1 ? x.sheets : undefined,
+    };
   }
 
   const text = new TextDecoder('utf-8').decode(bytes);

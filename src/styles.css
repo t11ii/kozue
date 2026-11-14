@@ -575,6 +575,7 @@ svg {
   bottom: 8px;
   width: 272px;
   padding: 12px 14px 16px;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   background: var(--card);
@@ -614,7 +615,7 @@ svg {
 }
 
 #panel .tabs {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   margin-bottom: 2px;
 }
 
@@ -942,6 +943,257 @@ svg {
 .swatch.custom::-moz-color-swatch {
   border: 0;
   opacity: 0;
+}
+
+/* "No fill": a red stroke across an empty swatch. */
+.swatch.none,
+.well-chip.none {
+  background:
+    linear-gradient(
+      to top right,
+      transparent calc(50% - 1px),
+      #e5484d calc(50% - 1px),
+      #e5484d calc(50% + 1px),
+      transparent calc(50% + 1px)
+    ),
+    var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* ------------------------------------------------- style page of the panel */
+
+.seg.two {
+  grid-template-columns: 1fr 1fr;
+}
+
+.seg.two .seg-btn {
+  height: 30px;
+  font-size: 12.5px;
+}
+
+/* A heading with a small control at its end. */
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 13px 0 6px;
+}
+
+#panel .label-row label {
+  margin: 0;
+}
+
+#panel .topic-props > .label-row:first-child,
+#panel .hint-text + .label-row {
+  margin-top: 0;
+}
+
+.label-row .icon-btn {
+  width: 24px;
+  height: 24px;
+  margin: -4px -3px -4px 0;
+}
+
+.label-row .icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* A property with its control on the same line. */
+.prop-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#panel h3 + div > .prop-row:first-child {
+  margin-top: 0;
+}
+
+#panel .prop-row + label {
+  margin-top: 13px;
+}
+
+.well {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--field);
+}
+
+.well:hover {
+  background: var(--press);
+}
+
+.well.open {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.well-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 18px;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.well-arrow svg {
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.color-pop {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  z-index: 90;
+  animation: pop 0.12s ease-out;
+}
+
+.color-pop .swatches {
+  flex-wrap: nowrap;
+  padding: 0;
+}
+
+.color-pop .swatch:not(.auto):not(.custom):not(.active) {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.struct-grid.small.shapes {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.struct-grid.small.shapes .struct-btn {
+  padding: 0;
+}
+
+.struct-grid.small.shapes .struct-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.btn-row.wrap {
+  flex-wrap: wrap;
+}
+
+.btn-row .spacer {
+  flex: 1;
+}
+
+.btn[data-tip] {
+  position: relative;
+}
+
+.btn.small.glyph {
+  width: 30px;
+  padding: 0;
+  font-size: 13px;
+}
+
+.btn.glyph.bold {
+  font-weight: 700;
+}
+
+.btn.glyph.italic {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 14px;
+  font-style: italic;
+}
+
+.btn.glyph.strike {
+  text-decoration: line-through;
+}
+
+.btn.small.step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+}
+
+.btn.step svg {
+  width: 14px;
+  height: 14px;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+}
+
+.size-value {
+  position: relative;
+  min-width: 30px;
+  height: 26px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.size-value:hover {
+  background: var(--hover);
+}
+
+.size-value.set {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+#panel .btn-row.last {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+#panel .btn-row.last + .btn-row {
+  margin-top: 6px;
+}
+
+.btn-row .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+}
+
+input[type='number'].field {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+input[type='number'].field::-webkit-inner-spin-button,
+input[type='number'].field::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .marker-grid {

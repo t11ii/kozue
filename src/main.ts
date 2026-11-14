@@ -62,6 +62,7 @@ app.register('editLabels', () => {
 app.register('editRel', () => {
   if (app.selRel) panel.focusRel();
 });
+app.register('editStyle', () => panel.showStyle());
 app.register('togglePanel', () => panel.toggle());
 for (const kind of LAYOUT_KINDS) app.register('layout.' + kind, () => app.setLayout(kind));
 app.register('editNote', () => {
@@ -114,6 +115,15 @@ const MAP_COMMANDS = new Set([
   'summary',
   'relationship',
   'focusBranch',
+  'bold',
+  'italic',
+  'strike',
+  'important',
+  'crossed',
+  'copyStyle',
+  'pasteStyle',
+  'styleToLevel',
+  'resetStyle',
 ]);
 
 onMenuCommand((id) => {
@@ -126,6 +136,7 @@ onMenuCommand((id) => {
     if (TEXT_COMMANDS.has(id)) document.execCommand(id);
     if (TEXT_COMMANDS.has(id) || MAP_COMMANDS.has(id)) return;
   }
+  input.ranFromMenu(id);
   app.exec(id);
 });
 onCloseRequested(() => files.confirmClose());

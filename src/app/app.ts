@@ -5,14 +5,18 @@
 import type { Bounds, LayoutOpts } from '../core/layout.ts';
 import { layoutDoc } from '../core/layout.ts';
 import { toggleMarker } from '../core/markers.ts';
-import type { ColorRef, LayoutKind, NodeData, Side, Txn } from '../core/model.ts';
+import type { ColorRef, LayoutKind, MapStyle, NodeData, Side, TopicStyle, Txn } from '../core/model.ts';
 import {
   Doc,
   MAX_BEND,
+  MAX_SIZE,
   MAX_TITLE,
+  MIN_SIZE,
   MNode,
   Rel,
   cleanLabels,
+  cleanStyle,
+  cleanWidth,
   cloneForPaste,
   balancedSplit,
   fromData,
@@ -58,7 +62,20 @@ import {
 import type { SearchOpts } from '../core/text.ts';
 import { occurrences } from '../core/text.ts';
 import type { Font, Theme } from '../core/themes.ts';
-import { DEFAULT_THEME, ICON, ICON_STEP, LEVELS, REL_FONT, font, themeById } from '../core/themes.ts';
+import {
+  DEFAULT_THEME,
+  ICON,
+  ICON_STEP,
+  LEVELS,
+  REL_FONT,
+  contrast,
+  font,
+  fontIn,
+  mix,
+  nodeStyle,
+  themeById,
+  themeWith,
+} from '../core/themes.ts';
 import { parseOutline, toOutline } from '../io/outline.ts';
 import type { Painter } from '../render/painter.ts';
 import { circle, roundRect } from '../render/painter.ts';
@@ -71,6 +88,7 @@ import {
   drawNodeAt,
   drawScene,
   edgePoint,
+  outlinePath,
   relCurve,
   relLabel,
   snapPositions,
@@ -81,7 +99,7 @@ import { TextEditor } from './editor.ts';
 import { CanvasMeasurer, MAX_ZOOM, MIN_ZOOM, View } from './view.ts';
 
 export type AppEvent = 'doc' | 'selection' | 'view' | 'theme' | 'edit' | 'search' | 'mode';
-export type HitPart = 'body' | 'toggle' | 'note' | 'link' | 'todo';
+export type HitPart = 'body' | 'toggle' | 'note' | 'link' | 'todo' | 'width';
 export type { Arrow } from '../core/structures.ts';
 export type { SearchOpts } from '../core/text.ts';
 
@@ -93,11 +111,37 @@ export interface Filter {
 }
 
 /** Short messages the app asks the UI to show. */
-export type Notice = 'noSummaryHere';
+export type Notice = 'noSummaryHere' | 'styleCopied';
 
 export interface Hit {
   node: MNode;
   part: HitPart;
+  /** For `width`: the left (-1) or right (1) edge of the topic. */
+  edge?: -1 | 1;
+}
+
+/** Changes to a topic style: a value sets a property, `null` returns it to what the theme says. */
+export type StylePatch = { [K in keyof TopicStyle]?: TopicStyle[K] | null };
+/** Changes to the settings of the map, in the same way. */
+export type MapStylePatch = { [K in keyof MapStyle]?: MapStyle[K] | null };
+
+/** The quick style for topics that matter. */
+const IMPORTANT: TopicStyle = { fill: '#e5484d', color: '#ffffff', bold: true };
+
+/** A topic's width being changed by dragging one of its edges. */
+interface ResizeState {
+  node: MNode;
+  nodes: MNode[];
+  edge: -1 | 1;
+  /** Width of the text block and position of the dragged edge when the drag began. */
+  w0: number;
+  e0: number;
+  /** How far the edge moves per unit of width. */
+  slope: number;
+  /** Distance of the pointer from the edge. */
+  offset: number;
+  /** Folds all steps of the drag into one undo step. */
+  key: string;
 }
 
 interface DropTarget {
@@ -163,6 +207,7 @@ export class App {
   private selSet = new Set<MNode>();
   hover: MNode | null = null;
   hoverPart: HitPart = 'body';
+  private hoverEdge: -1 | 1 = 1;
 
   bounds: Bounds = { x0: 0, y0: 0, x1: 0, y1: 0 };
   /** Number of visible topics. */
@@ -196,6 +241,10 @@ export class App {
   private viewAnim: ViewAnim | null = null;
   private raf = 0;
   private drag: DragState | null = null;
+  private resize: ResizeState | null = null;
+  private resizeSeq = 0;
+  /** The style taken by "Copy Style". */
+  private styleClip: { style: TopicStyle | undefined } | null = null;
   private marks: Set<MNode> | null = null;
   private keep: Set<MNode> | null = null;
   private relIds = new WeakMap<Rel, number>();
@@ -294,6 +343,15 @@ export class App {
     c('relationship', () => this.startRelationship());
     c('focusBranch', () => this.toggleFocus());
     c('clearFilter', () => this.setFilter(null));
+    c('bold', () => this.toggleBold());
+    c('italic', () => this.toggleFlag('italic'));
+    c('strike', () => this.toggleFlag('strike'));
+    c('important', () => this.quickStyle('important'));
+    c('crossed', () => this.quickStyle('crossed'));
+    c('resetStyle', () => this.resetStyle());
+    c('copyStyle', () => this.copyStyle());
+    c('pasteStyle', () => this.pasteStyle());
+    c('styleToLevel', () => this.applyStyleToLevel());
   }
 
   // ---------------------------------------------------------------- document
@@ -303,10 +361,11 @@ export class App {
     this.doc = doc;
     doc.selection = () => this.sel;
     doc.onChange = (txn, kind) => this.onDocChange(txn, kind);
-    this.theme = themeById(doc.theme);
+    this.theme = themeWith(themeById(doc.theme), doc.style);
     this.epoch++;
     this.hover = null;
     this.drag = null;
+    this.resize = null;
     this.marquee = null;
     this.anim = null;
     this.viewAnim = null;
@@ -336,13 +395,15 @@ export class App {
     const root = this.doc.root;
     let themeChanged = false;
     let layoutChanged = false;
+    let lookChanged = false;
     for (const op of txn.ops) {
+      if (op.k === 'look') lookChanged = true;
       if (op.k !== 'meta') continue;
       if (op.key === 'theme') themeChanged = true;
       else layoutChanged = true;
     }
-    if (themeChanged || layoutChanged) {
-      this.theme = themeById(this.doc.theme);
+    if (themeChanged || layoutChanged || lookChanged) {
+      this.theme = themeWith(themeById(this.doc.theme), this.doc.style);
       this.epoch++;
     }
     let modeChanged = false;
@@ -365,10 +426,13 @@ export class App {
     this.refreshSearch();
     this.refreshFilter();
     if (this.filter || modeChanged) this.emit('mode');
-    this.relayout(!themeChanged);
+    // An edge being dragged must stay under the pointer: no animation then.
+    this.relayout(!themeChanged && !this.resize);
+    // The topic under the text cursor may have got another font, color or width.
+    if (this.editor.state) this.editor.restyle();
     if (layoutChanged) this.fit(true);
     else if (kind !== 'do' && this.primary) this.reveal(this.primary);
-    if (themeChanged || layoutChanged) this.emit('theme');
+    if (themeChanged || layoutChanged || lookChanged) this.emit('theme');
     this.emit('doc');
   }
 
@@ -756,11 +820,8 @@ export class App {
   }
 
   private outline(p: Painter, n: MNode, color: string, width: number, alpha: number, fill: number): void {
-    const g = 3 / Math.min(1, this.view.zoom);
-    const m = LEVELS[n.lv];
-    const r = (n.lv === 0 && n.h <= m.lineHeight + m.padY * 2 ? n.h / 2 : m.radius) + g;
     p.beginPath();
-    roundRect(p, n.ax - g, n.ay - g, n.w + g * 2, n.h + g * 2, r);
+    outlinePath(p, n, 3 / Math.min(1, this.view.zoom));
     if (fill > 0) p.fill(color, fill);
     p.stroke(color, width, alpha);
   }
@@ -796,6 +857,18 @@ export class App {
       if (canToggle(h)) this.drawToggle(p, h, this.hoverPart === 'toggle');
       const pr = this.primary;
       if (pr !== h && canToggle(pr)) this.drawToggle(p, pr, false);
+      // The edge of a topic that changes its width, while the pointer is on it or drags it.
+      const rs = this.resize;
+      const grip = rs ? rs.node : h && this.hoverPart === 'width' ? h : null;
+      if (grip && this.isVisible(grip)) {
+        const g = 3 / Math.min(1, z);
+        const edge = rs ? rs.edge : this.hoverEdge;
+        const len = Math.max(8, Math.min(26, grip.h - 6));
+        const t = 4 / Math.min(1, z);
+        p.beginPath();
+        roundRect(p, (edge > 0 ? grip.ax + grip.w + g : grip.ax - g) - t / 2, grip.ay + grip.h / 2 - len / 2, t, len, t / 2);
+        p.fill(accent);
+      }
     }
 
     const cn = this.connect;
@@ -839,7 +912,7 @@ export class App {
       const gx = drag.wx + 14 / z;
       const gy = drag.wy + 16 / z;
       p.beginPath();
-      roundRect(p, gx - 4, gy - 3, n.w + 8, n.h + 6, LEVELS[n.lv].radius + 3);
+      roundRect(p, gx - 4, gy - 3, n.w + 8, n.h + 6, Math.min(n.rad, 14) + 3);
       p.fill(this.theme.bg, 0.72);
       p.stroke(accent, 1.25 / Math.min(1, z), 0.55);
       drawNodeAt(p, n, o, gx, gy, 0.7);
@@ -867,16 +940,29 @@ export class App {
   hitTest(wx: number, wy: number): Hit | null {
     const top = this.vroot;
     const pad = 28 + (this.anim ? this.anim.shift : 0);
+    // The edges of a selected topic are handles that change its width.
+    const grip = this.connect ? 0 : 5 / this.view.zoom;
     const visit = (n: MNode): Hit | null => {
       if (wx < n.bx0 - pad || wx > n.bx1 + pad || wy < n.by0 - pad || wy > n.by1 + pad) return null;
-      if (wx >= n.ax - 2 && wx <= n.ax + n.w + 2 && wy >= n.ay - 2 && wy <= n.ay + n.h + 2) {
+      const inBox = wx >= n.ax - 2 && wx <= n.ax + n.w + 2 && wy >= n.ay - 2 && wy <= n.ay + n.h + 2;
+      if (!inBox && n !== top && n.children.length) {
+        const [tx, ty] = togglePos(n);
+        if (Math.abs(wx - tx) <= TOGGLE_R + 3 && Math.abs(wy - ty) <= TOGGLE_R + 3) return { node: n, part: 'toggle' };
+      }
+      if (grip > 0 && this.selSet.has(n) && wy >= n.ay && wy <= n.ay + n.h) {
+        // Inside the topic the handles stay narrow, so that most of it still grabs the topic itself.
+        const inner = Math.min(grip, n.w / 4);
+        if (wx >= n.ax - grip && wx <= n.ax + inner) return { node: n, part: 'width', edge: -1 };
+        if (wx >= n.ax + n.w - inner && wx <= n.ax + n.w + grip) return { node: n, part: 'width', edge: 1 };
+      }
+      if (inBox) {
         if (n.todo !== undefined) {
           const [bx, by, bs] = todoBox(n);
           if (wx >= bx - 3 && wx <= bx + bs + 3 && wy >= by - 3 && wy <= by + bs + 3) return { node: n, part: 'todo' };
         }
         if (n.note || n.link) {
           let ix = n.ax + n.tx + n.tw + (ICON_STEP - ICON) - 2;
-          if (wy >= n.ay + n.ty - 2 && wy <= n.ay + n.ty + LEVELS[n.lv].lineHeight + 2) {
+          if (wy >= n.ay + n.ty - 2 && wy <= n.ay + n.ty + n.lh + 2) {
             if (n.note) {
               if (wx >= ix && wx < ix + ICON_STEP) return { node: n, part: 'note' };
               ix += ICON_STEP;
@@ -885,10 +971,6 @@ export class App {
           }
         }
         return { node: n, part: 'body' };
-      }
-      if (n !== top && n.children.length) {
-        const [tx, ty] = togglePos(n);
-        if (Math.abs(wx - tx) <= TOGGLE_R + 3 && Math.abs(wy - ty) <= TOGGLE_R + 3) return { node: n, part: 'toggle' };
       }
       if (!n.folded) {
         for (const k of n.children) {
@@ -908,13 +990,14 @@ export class App {
   hitRel(wx: number, wy: number, textOnly = false): Rel | null {
     let best: Rel | null = null;
     let bd = 7 / Math.min(1, this.view.zoom);
+    const relFont = fontIn(REL_FONT, this.theme.typeface);
     for (const r of this.doc.rels) {
       if (!this.isVisible(r.from) || !this.isVisible(r.to)) continue;
       const c = relCurve(r);
       const label = relLabel(r);
       if (label) {
         const [mx, my] = curvePoint(c, 0.5);
-        if (Math.abs(wx - mx) <= this.measurer.width(REL_FONT, label) / 2 + 7 && Math.abs(wy - my) <= 11) return r;
+        if (Math.abs(wx - mx) <= this.measurer.width(relFont, label) / 2 + 7 && Math.abs(wy - my) <= 11) return r;
       }
       if (textOnly) continue;
       let px = c.x0;
@@ -937,10 +1020,18 @@ export class App {
   setHover(hit: Hit | null, overRel = false): void {
     const node = hit ? hit.node : null;
     const part = hit ? hit.part : 'body';
-    this.view.canvas.style.cursor = this.connect ? 'crosshair' : overRel || (hit && hit.part !== 'body') ? 'pointer' : '';
-    if (node === this.hover && part === this.hoverPart) return;
+    const edge = hit?.edge ?? 1;
+    this.view.canvas.style.cursor = this.connect
+      ? 'crosshair'
+      : part === 'width'
+        ? 'ew-resize'
+        : overRel || (hit && hit.part !== 'body')
+          ? 'pointer'
+          : '';
+    if (node === this.hover && part === this.hoverPart && edge === this.hoverEdge) return;
     this.hover = node;
     this.hoverPart = part;
+    this.hoverEdge = edge;
     this.requestRender();
   }
 
@@ -1282,7 +1373,28 @@ export class App {
 
   setTheme(id: string): void {
     this.editor.commit();
-    this.doc.run('Theme', () => this.doc.setMeta('theme', id));
+    const doc = this.doc;
+    doc.run('Theme', () => {
+      doc.setMeta('theme', id);
+      // A theme comes with its own canvas color; the line thickness and the typeface stay.
+      if (doc.style.background !== undefined) {
+        const rest = { ...doc.style };
+        delete rest.background;
+        doc.setStyle(rest);
+      }
+    });
+  }
+
+  /** Changes the map's own background, line thickness or typeface. */
+  setMapStyle(patch: MapStylePatch, live = false): void {
+    this.editor.commit();
+    const doc = this.doc;
+    const next: Record<string, unknown> = { ...doc.style };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null || v === undefined) delete next[k];
+      else next[k] = v;
+    }
+    doc.run('Map style', () => doc.setStyle(next as MapStyle), live ? { merge: 'look:' + Object.keys(patch).join(), within: 2500 } : {});
   }
 
   setLayout(kind: LayoutKind): void {
@@ -1508,6 +1620,234 @@ export class App {
     const bend = clamp(Math.round(off / 0.75), -MAX_BEND, MAX_BEND);
     const doc = this.doc;
     doc.run('Bend relationship', () => doc.setRel(rel, 'bend', Math.abs(bend) < 5 ? 0 : bend), { merge: 'bend:' + grab });
+    this.requestRender();
+  }
+
+  // -------------------------------------------------------------- topic style
+
+  /**
+   * Gives every selected topic the style that `change` makes of its current one.
+   * @param merge names a change that arrives in many steps (a color being picked): they fold into one undo step
+   */
+  private restyle(label: string, change: (st: TopicStyle, n: MNode) => TopicStyle | undefined, merge?: string): void {
+    const doc = this.doc;
+    const nodes = this.sel;
+    if (!nodes.length) return;
+    const opts = merge ? { merge: merge + ':' + nodes.map((n) => n.id).join(','), within: 2500 } : {};
+    doc.run(
+      label,
+      () => {
+        for (const n of nodes) {
+          const next = cleanStyle(change({ ...n.style }, n));
+          if (JSON.stringify(next) !== JSON.stringify(n.style)) doc.set(n, 'style', next);
+        }
+      },
+      opts,
+    );
+  }
+
+  /** Sets (or, with `null`, clears) properties of the selected topics' style. */
+  patchStyle(patch: StylePatch, live = false): void {
+    this.restyle(
+      'Style',
+      (st) => {
+        const next: Record<string, unknown> = { ...st };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null || v === undefined) delete next[k];
+          else next[k] = v;
+        }
+        return next as TopicStyle;
+      },
+      live ? 'style:' + Object.keys(patch).join() : undefined,
+    );
+  }
+
+  /** Whether a topic's text is heavy, by its own style or by its level. */
+  isBold(n: MNode): boolean {
+    return n.style?.bold ?? LEVELS[n.lv].font.weight >= 600;
+  }
+
+  toggleBold(): void {
+    const want = !this.sel.every((n) => this.isBold(n));
+    this.restyle('Bold', (st, n) => {
+      // Only a weight that differs from the level's is worth recording.
+      if (want === LEVELS[n.lv].font.weight >= 600) delete st.bold;
+      else st.bold = want;
+      return st;
+    });
+  }
+
+  toggleFlag(key: 'italic' | 'strike'): void {
+    const on = this.sel.every((n) => n.style?.[key] === true);
+    this.restyle(key === 'italic' ? 'Italic' : 'Strikethrough', (st) => {
+      if (on) delete st[key];
+      else st[key] = true;
+      return st;
+    });
+  }
+
+  /** Font size of a topic, by its own style or by its level. */
+  fontSize(n: MNode): number {
+    return n.style?.size ?? LEVELS[n.lv].font.size;
+  }
+
+  /** Makes the text of the selected topics larger or smaller (`null`: the size of their level again). */
+  stepFontSize(delta: number | null): void {
+    this.restyle(
+      'Font size',
+      (st, n) => {
+        const base = LEVELS[n.lv].font.size;
+        const size = delta === null ? base : clamp(Math.round((st.size ?? base) + delta), MIN_SIZE, MAX_SIZE);
+        if (size === base) delete st.size;
+        else st.size = size;
+        return st;
+      },
+      delta === null ? undefined : 'size',
+    );
+  }
+
+  /** True when every selected topic carries the quick style. */
+  hasQuickStyle(kind: 'important' | 'crossed'): boolean {
+    const nodes = this.sel;
+    if (!nodes.length) return false;
+    if (kind === 'crossed') return nodes.every((n) => n.style?.strike === true);
+    return nodes.every((n) => n.style?.fill === IMPORTANT.fill && n.style?.bold === true);
+  }
+
+  /**
+   * Quick styles, switched on and off like a marker: "important" is a red box with
+   * heavy white text, "crossed" strikes the text through and lets the topic step back.
+   */
+  quickStyle(kind: 'important' | 'crossed'): void {
+    const nodes = this.sel;
+    if (!nodes.length) return;
+    const theme = this.theme;
+    const on = this.hasQuickStyle(kind);
+    if (kind === 'important') {
+      this.restyle('Quick style', (st) => {
+        if (!on) return { ...st, ...IMPORTANT };
+        delete st.fill;
+        delete st.color;
+        delete st.bold;
+        return st;
+      });
+      return;
+    }
+    const pale = mix(theme.bg, theme.text, 0.1);
+    this.restyle('Quick style', (st, n) => {
+      if (on) {
+        delete st.strike;
+        delete st.color;
+        if (st.fill === pale) delete st.fill;
+        return st;
+      }
+      // Gray text would not read on a strongly colored box: that turns pale as well.
+      const fill = nodeStyle(theme, n.lv, n.branch, n.box, st).fill;
+      if (fill !== null && contrast(fill, theme.muted) < 2.2) st.fill = pale;
+      st.strike = true;
+      st.color = theme.muted;
+      return st;
+    });
+  }
+
+  /** Back to what the theme says (the width of the topics stays). */
+  resetStyle(): void {
+    this.restyle('Reset style', () => undefined);
+  }
+
+  copyStyle(): void {
+    const n = this.primary;
+    if (!n) return;
+    this.styleClip = { style: n.style ? { ...n.style } : undefined };
+    this.notify('styleCopied');
+  }
+
+  get canPasteStyle(): boolean {
+    return this.styleClip !== null;
+  }
+
+  pasteStyle(): void {
+    const clip = this.styleClip;
+    if (clip) this.restyle('Paste style', () => (clip.style ? { ...clip.style } : undefined));
+  }
+
+  /** Gives every topic of the same level in the map the style of the selected one. */
+  applyStyleToLevel(): void {
+    const src = this.primary;
+    if (!src) return;
+    const doc = this.doc;
+    let level = 0;
+    for (let p = src.parent; p; p = p.parent) level++;
+    const style = JSON.stringify(src.style);
+    const visit = (n: MNode, depth: number): void => {
+      if (depth < level) for (const k of n.children) visit(k, depth + 1);
+      else if (n !== src && JSON.stringify(n.style) !== style) doc.set(n, 'style', src.style ? { ...src.style } : undefined);
+    };
+    doc.run('Style of the level', () => visit(doc.root, 0));
+  }
+
+  // ------------------------------------------------------------- topic width
+
+  /** Sets the width of the selected topics' text; `undefined` sizes them to their text again. */
+  setWidth(width: number | undefined): void {
+    const doc = this.doc;
+    const nodes = this.sel;
+    if (!nodes.length) return;
+    const w = width === undefined ? undefined : cleanWidth(width);
+    doc.run('Width', () => {
+      for (const n of nodes) doc.set(n, 'width', w);
+    });
+  }
+
+  get resizing(): boolean {
+    return this.resize !== null;
+  }
+
+  /**
+   * Starts changing the width of `node` (and of everything selected with it) by
+   * dragging its left (-1) or right (1) edge; `wx` is where the pointer went down.
+   */
+  beginResize(node: MNode, edge: -1 | 1, wx: number): void {
+    this.editor.commit();
+    if (!this.isVisible(node)) return;
+    const edgeX = (): number => (edge > 0 ? node.x + node.w : node.x);
+    const w0 = node.tw;
+    const e0 = edgeX();
+    // How far the edge moves per unit of width depends on the structure (a centered
+    // topic grows to both sides) and on the shape. Find out by trying.
+    const saved = node.width;
+    const probe = 48;
+    node.width = w0 + probe;
+    node.ver++;
+    this.relayout(false);
+    let slope = (edgeX() - e0) / probe;
+    node.width = saved;
+    node.ver++;
+    this.relayout(false);
+    // The edge that stays where it is (its connector arrives there) widens the topic like the other one.
+    if (Math.abs(slope) < 0.05) slope = edge;
+    const nodes = this.selSet.has(node) ? this.sel.slice() : [node];
+    this.resize = { node, nodes, edge, w0, e0, slope, offset: wx - e0, key: 'width:' + ++this.resizeSeq };
+    this.requestRender();
+  }
+
+  updateResize(wx: number): void {
+    const r = this.resize;
+    if (!r) return;
+    const width = cleanWidth(r.w0 + (wx - r.offset - r.e0) / r.slope);
+    const doc = this.doc;
+    doc.run(
+      'Width',
+      () => {
+        for (const n of r.nodes) doc.set(n, 'width', width);
+      },
+      { merge: r.key },
+    );
+  }
+
+  endResize(): void {
+    if (!this.resize) return;
+    this.resize = null;
     this.requestRender();
   }
 

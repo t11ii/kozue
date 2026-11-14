@@ -37,13 +37,27 @@ export function roundRect(p: Painter, x: number, y: number, w: number, h: number
   p.closePath();
 }
 
+export function ellipse(p: Painter, cx: number, cy: number, rx: number, ry: number): void {
+  const kx = rx * K;
+  const ky = ry * K;
+  p.moveTo(cx + rx, cy);
+  p.cubicTo(cx + rx, cy + ky, cx + kx, cy + ry, cx, cy + ry);
+  p.cubicTo(cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy);
+  p.cubicTo(cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry);
+  p.cubicTo(cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy);
+  p.closePath();
+}
+
 export function circle(p: Painter, cx: number, cy: number, r: number): void {
-  const k = r * K;
-  p.moveTo(cx + r, cy);
-  p.cubicTo(cx + r, cy + k, cx + k, cy + r, cx, cy + r);
-  p.cubicTo(cx - k, cy + r, cx - r, cy + k, cx - r, cy);
-  p.cubicTo(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
-  p.cubicTo(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
+  ellipse(p, cx, cy, r, r);
+}
+
+/** A rhombus with its corners in the middle of the sides of the given box. */
+export function diamond(p: Painter, cx: number, cy: number, rx: number, ry: number): void {
+  p.moveTo(cx + rx, cy);
+  p.lineTo(cx, cy + ry);
+  p.lineTo(cx - rx, cy);
+  p.lineTo(cx, cy - ry);
   p.closePath();
 }
 
@@ -224,6 +238,8 @@ export class SvgPainter implements Painter {
     if (!s) return;
     this.out.push(
       `<text x="${num(x)}" y="${num(y)}" font-size="${font.size}" font-weight="${font.weight}" fill="${color}"` +
+        (font.italic ? ' font-style="italic"' : '') +
+        (font.family !== FONT_STACK ? ` font-family="${escapeXml(font.family)}"` : '') +
         (align === 'center' ? ' text-anchor="middle"' : '') +
         (alpha < 1 ? ` fill-opacity="${num(alpha)}"` : '') +
         ` xml:space="preserve">${escapeXml(s)}</text>`,

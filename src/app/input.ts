@@ -12,7 +12,7 @@ interface Pick {
   rel: Rel | null;
 }
 
-type Mode = 'idle' | 'pan' | 'blank' | 'node' | 'rel' | 'drag' | 'marquee' | 'pinch';
+type Mode = 'idle' | 'pan' | 'blank' | 'node' | 'rel' | 'drag' | 'width' | 'marquee' | 'pinch';
 
 /** Shortcuts that work no matter where the keyboard focus is. Key: [Shift-]key with the platform modifier. */
 const GLOBAL_KEYS: Record<string, string> = {
@@ -58,6 +58,8 @@ export class Input {
   private gestureZoom = 1;
   /** Commands recently run from the keyboard, to ignore the native menu echo. */
   private recent = new Map<string, number>();
+  /** Commands recently run by the native menu, to ignore the key press that it also answers. */
+  private menuRuns = new Map<string, number>();
 
   /** Opens the context menu (provided by the UI layer). */
   onContextMenu: (x: number, y: number, node: MNode | null) => void = () => {};
@@ -98,8 +100,16 @@ export class Input {
     return t !== undefined && performance.now() - t < 300;
   }
 
+  /** The native menu is about to run `id` (it may be answering the very key press the page sees too). */
+  ranFromMenu(id: string): void {
+    this.menuRuns.set(id, performance.now());
+  }
+
   private run(id: string): void {
-    this.recent.set(id, performance.now());
+    const now = performance.now();
+    const byMenu = this.menuRuns.get(id);
+    if (byMenu !== undefined && now - byMenu < 300) return;
+    this.recent.set(id, now);
     this.app.exec(id);
   }
 
@@ -169,6 +179,11 @@ export class Input {
     }
     if (hit && hit.part === 'todo') {
       app.setTodo(!hit.node.todo, [hit.node]);
+      return;
+    }
+    if (hit && hit.part === 'width') {
+      // The edge of a selected topic: dragging it changes the topic's width.
+      this.mode = 'width';
       return;
     }
     if (rel) {
@@ -243,6 +258,14 @@ export class Input {
       case 'drag':
         app.updateDrag(sx, sy);
         break;
+      case 'width': {
+        const hit = this.hit;
+        if (!hit) break;
+        if (!app.resizing) app.beginResize(hit.node, hit.edge ?? 1, app.view.wx(this.startX));
+        this.canvas.style.cursor = 'ew-resize';
+        app.updateResize(app.view.wx(sx));
+        break;
+      }
       case 'rel':
         if (this.bending) app.bendRel(this.bending, app.view.wx(sx), app.view.wy(sy), this.grabs);
         break;
@@ -286,6 +309,9 @@ export class Input {
       case 'drag':
         app.endDrag(!cancelled);
         break;
+      case 'width':
+        app.endResize();
+        break;
       case 'marquee':
         app.setMarquee(null);
         break;
@@ -316,6 +342,9 @@ export class Input {
     if (hit && hit.part === 'body') {
       app.select([hit.node]);
       app.editor.begin(hit.node, 'all');
+    } else if (hit && hit.part === 'width') {
+      // A double click on the edge returns the topic to the width of its text.
+      app.setWidth(undefined);
     } else if (rel) {
       app.selectRel(rel);
       this.onRelEdit();
@@ -436,7 +465,34 @@ export class Input {
       // Text undo, routed through one place so a native menu cannot run it twice.
       e.preventDefault();
       this.run(key === 'y' || e.shiftKey ? 'redo' : 'undo');
+      return;
     }
+    // The text style of the topic can change while its text is being typed.
+    const id = this.styleKey(e, mod, key, true);
+    if (id) {
+      e.preventDefault();
+      this.run(id);
+    }
+  }
+
+  /**
+   * The style command a key combination stands for, if any. Digits and the
+   * Alt combinations are read from the physical key: what they type differs
+   * between keyboard layouts (and Alt turns letters into symbols on the Mac).
+   * @param textOnly only the commands that make sense while a text is being edited
+   */
+  private styleKey(e: KeyboardEvent, mod: boolean, key: string, textOnly: boolean): string {
+    if (!mod) return '';
+    if (e.altKey) {
+      // AltGr (Ctrl+Alt on Windows) types characters on many layouts: leave those alone.
+      if (textOnly || e.shiftKey || (!isMac && e.getModifierState('AltGraph'))) return '';
+      return e.code === 'KeyC' ? 'copyStyle' : e.code === 'KeyV' ? 'pasteStyle' : '';
+    }
+    if (!e.shiftKey) return key === 'b' ? 'bold' : '';
+    if (key === 'i') return 'italic';
+    if (key === 'x') return 'strike';
+    if (textOnly) return '';
+    return e.code === 'Digit1' ? 'important' : e.code === 'Digit2' ? 'crossed' : '';
   }
 
   /** Keys while topics are selected but no text is being edited. */
@@ -444,7 +500,12 @@ export class Input {
     const app = this.app;
     const arrow = ARROWS[key];
     if (mod) {
-      let id = '';
+      let id = this.styleKey(e, mod, key, false);
+      if (id) {
+        e.preventDefault();
+        this.run(id);
+        return;
+      }
       if (key === 'z') id = e.shiftKey ? 'redo' : 'undo';
       else if (key === 'y') id = 'redo';
       else if (key === 'a') id = 'selectAll';
