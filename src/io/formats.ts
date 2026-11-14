@@ -1,5 +1,7 @@
 // File format registry: detection, import to plain document data, text export.
 
+import type { BookData, FileData } from '../core/book.ts';
+import { cleanSheetName, isBookData } from '../core/book.ts';
 import type { DocData, LayoutKind, MapStyle, NodeData, RelData } from '../core/model.ts';
 import { parseFreemind, parseOpml, toOpml } from './opml.ts';
 import { forestToRoot, parseOutline, toMarkdown, toOutline } from './outline.ts';
@@ -7,17 +9,28 @@ import { parseXmind } from './xmind.ts';
 
 export const NATIVE_EXT = 'kozue';
 
-export interface Imported {
+/** One sheet of an imported file. */
+export interface ImportedSheet {
+  name?: string;
   root: NodeData;
   layout?: LayoutKind;
   theme?: string;
   relationships?: RelData[];
   /** The map's own settings (background, line thickness, typeface). */
   style?: MapStyle;
+}
+
+/**
+ * An imported file. The fields of its first sheet are at the top level (most
+ * formats have just the one); `sheets` lists all of them when the file has
+ * several, or a named one.
+ */
+export interface Imported extends ImportedSheet {
   /** True for Kozue's own format (the file can be saved back in place). */
   native: boolean;
-  /** Sheets in the source file, when it had more than the one imported. */
-  sheets?: number;
+  sheets?: ImportedSheet[];
+  /** Index of the sheet that was on show when the file was saved. */
+  active?: number;
 }
 
 /** Extensions offered in the Open dialog. */
@@ -34,11 +47,30 @@ export function baseName(name: string): string {
 }
 
 function parseNative(text: string): Imported {
-  const data = JSON.parse(text) as Partial<DocData>;
-  if (!data || typeof data !== 'object' || data.format !== 'kozue' || !data.root) {
-    throw new Error('Not a Kozue document');
+  const data = JSON.parse(text) as Partial<DocData> | Partial<BookData>;
+  if (!data || typeof data !== 'object' || data.format !== 'kozue') throw new Error('Not a Kozue document');
+  if (isBookData(data)) {
+    const sheets: ImportedSheet[] = [];
+    for (const s of data.sheets as Partial<ImportedSheet>[]) {
+      if (!s || typeof s !== 'object' || !s.root) continue;
+      const name = cleanSheetName(s.name);
+      sheets.push({
+        ...(name ? { name } : {}),
+        root: s.root,
+        layout: s.layout,
+        theme: s.theme,
+        relationships: s.relationships,
+        style: s.style,
+      });
+    }
+    if (!sheets.length) throw new Error('Not a Kozue document');
+    const active =
+      typeof data.active === 'number' && Number.isInteger(data.active) && data.active > 0 && data.active < sheets.length ? data.active : 0;
+    return { ...sheets[0], native: true, sheets, ...(active ? { active } : {}) };
   }
-  return { root: data.root, layout: data.layout, theme: data.theme, relationships: data.relationships, style: data.style, native: true };
+  const doc = data as Partial<DocData>;
+  if (!doc.root) throw new Error('Not a Kozue document');
+  return { root: doc.root, layout: doc.layout, theme: doc.theme, relationships: doc.relationships, style: doc.style, native: true };
 }
 
 export async function importFile(name: string, bytes: Uint8Array): Promise<Imported> {
@@ -47,14 +79,9 @@ export async function importFile(name: string, bytes: Uint8Array): Promise<Impor
   if (isZip) ext = 'xmind';
   if (ext === 'xmind') {
     const x = await parseXmind(bytes);
-    return {
-      root: x.root,
-      layout: x.layout,
-      relationships: x.relationships,
-      style: x.style,
-      native: false,
-      sheets: x.sheets > 1 ? x.sheets : undefined,
-    };
+    const first: ImportedSheet = { root: x.root, layout: x.layout, relationships: x.relationships, style: x.style };
+    // Several sheets, or one with a name of its own: keep them all.
+    return x.sheets.length > 1 || x.sheets[0].name ? { ...first, native: false, sheets: x.sheets } : { ...first, native: false };
   }
 
   const text = new TextDecoder('utf-8').decode(bytes);
@@ -78,8 +105,8 @@ export async function importFile(name: string, bytes: Uint8Array): Promise<Impor
   }
 }
 
-export function serializeNative(doc: DocData): string {
-  return JSON.stringify(doc, null, 1) + '\n';
+export function serializeNative(data: FileData): string {
+  return JSON.stringify(data, null, 1) + '\n';
 }
 
 export type TextFormat = 'md' | 'txt' | 'opml';

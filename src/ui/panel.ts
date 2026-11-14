@@ -623,6 +623,18 @@ export class Panel {
     });
     const labels = (node.labels ?? []).join(', ');
     if (this.labels && document.activeElement !== this.labels && this.labels.value !== labels) this.labels.value = labels;
+    // Numbers belong to the parent: they show for a topic when its siblings are numbered.
+    const parents = sel.map((n) => n.parent).filter((p): p is MNode => p !== null);
+    this.topic.querySelectorAll<HTMLElement>('[data-num]').forEach((b) => {
+      const want = b.dataset.num === 'none' ? undefined : b.dataset.num;
+      b.classList.toggle('active', parents.length > 0 && parents.every((p) => p.numbering?.format === want));
+    });
+    const tiered = this.topic.querySelector<HTMLButtonElement>('[data-tiered]');
+    if (tiered) {
+      const numbered = parents.filter((p) => p.numbering !== undefined);
+      tiered.disabled = numbered.length === 0;
+      tiered.classList.toggle('active', numbered.length > 0 && numbered.every((p) => p.numbering?.tiered === true));
+    }
     const frame = this.topic.querySelector<HTMLElement>('[data-frame]');
     if (frame) {
       frame.classList.toggle(
@@ -746,6 +758,28 @@ export class Panel {
       }
     });
     box.append(h('label', null, t('labels')), labels);
+
+    // Numbers in front of the topic and its siblings
+    if (!isRoot) {
+      const nums = h('div', { class: 'seg six' });
+      for (const [id, label] of [
+        ['none', t('todoNone')],
+        ['arabic', '1.'],
+        ['upper', 'A.'],
+        ['lower', 'a.'],
+        ['roman', 'I.'],
+        ['roman-lower', 'i.'],
+      ] as const) {
+        const b = h('button', { class: 'seg-btn', 'data-num': id }, label);
+        keepFocus(b);
+        b.addEventListener('click', () => app.setNumbering(id === 'none' ? null : id));
+        nums.append(b);
+      }
+      const tiered = h('button', { class: 'btn small toggle', 'data-tiered': true }, t('numberingTiered'));
+      keepFocus(tiered);
+      tiered.addEventListener('click', () => app.setNumberingTiered(!tiered.classList.contains('active')));
+      box.append(h('label', { title: t('numberingHint') }, t('numbering')), nums, h('div', { class: 'btn-row after-seg' }, tiered));
+    }
 
     // The properties of the whole branch come last.
     const branchProps = (): void => {

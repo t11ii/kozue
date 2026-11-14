@@ -28,6 +28,8 @@ export function keyHint(combo: string): string {
     tab: isMac ? '⇥' : 'Tab',
     delete: isMac ? '⌫' : 'Del',
     space: 'Space',
+    pagedown: 'PageDown',
+    pageup: 'PageUp',
     up: '↑',
     down: '↓',
     left: '←',

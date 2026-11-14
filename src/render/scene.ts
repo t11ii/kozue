@@ -219,7 +219,7 @@ export function togglePos(n: MNode): [number, number] {
 export function todoBox(n: MNode): [number, number, number] {
   const marks = n.markers ? n.markers.length : 0;
   const mkW = marks ? marks * MARK_STEP - (MARK_STEP - MARK) + MARK_GAP : 0;
-  return [n.ax + n.tx - mkW - TODO_STEP, n.ay + n.ty + (n.lh - TODO) / 2, TODO];
+  return [n.ax + n.tx - n.nw - mkW - TODO_STEP, n.ay + n.ty + (n.lh - TODO) / 2, TODO];
 }
 
 /** Outline of a boundary frame: x, y, width, height. */
@@ -869,7 +869,13 @@ function drawBody(p: Painter, n: MNode, o: SceneOpts): void {
 }
 
 const hasDecor = (n: MNode): boolean =>
-  n.markers !== undefined || n.note !== undefined || n.link !== undefined || n.todo !== undefined || n.labels !== undefined || n.hidden > 0;
+  n.markers !== undefined ||
+  n.note !== undefined ||
+  n.link !== undefined ||
+  n.todo !== undefined ||
+  n.labels !== undefined ||
+  n.num !== '' ||
+  n.hidden > 0;
 
 function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
   const a = alphaOf(n);
@@ -892,7 +898,7 @@ function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
     }
     if (n.markers) {
       const count = n.markers.length;
-      let mx = n.ax + n.tx - (count * MARK_STEP - (MARK_STEP - MARK) + MARK_GAP);
+      let mx = n.ax + n.tx - n.nw - (count * MARK_STEP - (MARK_STEP - MARK) + MARK_GAP);
       const my = n.ay + n.ty + (lh - MARK) / 2;
       // On a solid fill, plain glyphs need a light backdrop to stay readable.
       const plate = st.plate;
@@ -905,6 +911,12 @@ function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
         drawMarker(p, id, mx, my, MARK, plate ? '#3a3f4b' : st.text, a);
         mx += MARK_STEP;
       }
+    }
+    if (n.num) {
+      // The number is written like the text it stands in front of (and stays while that is edited).
+      const fm = o.metrics(n.font);
+      const base = n.ay + n.ty + (lh - (fm.ascent + fm.descent)) / 2 + fm.ascent;
+      p.text(n.num, n.ax + n.tx - n.nw, base, n.font, st.text, 'left', n.todo === true ? a * 0.5 : a);
     }
     if (n.note || n.link) {
       let ix = n.ax + n.tx + n.tw + (ICON_STEP - ICON);

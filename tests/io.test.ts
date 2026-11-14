@@ -147,7 +147,7 @@ test('Xmind export round-trips through import', async () => {
   assert.deepEqual([...files.keys()].sort(), ['content.json', 'manifest.json', 'metadata.json']);
   const back = await parseXmind(bytes);
   assert.equal(back.layout, 'map');
-  assert.equal(back.sheets, 1);
+  assert.equal(back.sheets.length, 1);
   assert.deepEqual(back.root, sample);
 });
 
@@ -188,7 +188,7 @@ test('Xmind import reads structure, markers, notes, folding and floating topics'
   ];
   const bytes = await zip([{ name: 'content.json', data: enc.encode(JSON.stringify(content)) }]);
   const x = await parseXmind(bytes);
-  assert.equal(x.sheets, 2);
+  assert.equal(x.sheets.length, 2);
   assert.equal(x.layout, 'logic');
   assert.deepEqual(x.root, {
     text: 'Central',

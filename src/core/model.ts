@@ -45,6 +45,17 @@ export interface TopicStyle {
   size?: number;
 }
 
+/** How the subtopics of a topic are numbered. */
+export type NumberFormat = 'arabic' | 'upper' | 'lower' | 'roman' | 'roman-lower';
+export const NUMBER_FORMATS: readonly NumberFormat[] = ['arabic', 'upper', 'lower', 'roman', 'roman-lower'];
+
+/** Automatic numbers in front of the subtopics of a topic. Never changed in place. */
+export interface Numbering {
+  format: NumberFormat;
+  /** The numbers carry the number of this topic in front: 2.1, 2.2 … */
+  tiered?: boolean;
+}
+
 export type FontKind = 'sans' | 'serif' | 'round' | 'mono';
 export const FONT_KINDS: readonly FontKind[] = ['sans', 'serif', 'round', 'mono'];
 
@@ -79,6 +90,8 @@ export interface NodeData {
   style?: TopicStyle;
   /** Width of the text block in px, when it was set by hand (the text wraps at it). */
   width?: number;
+  /** Numbers the subtopics of this topic. */
+  numbering?: Numbering;
   /** Stable id; only written for topics that a relationship refers to. */
   id?: string;
   children?: NodeData[];
@@ -147,6 +160,8 @@ export class MNode {
   style: TopicStyle | undefined = undefined;
   /** Width of the text block when set by hand; undefined sizes the topic to its text. */
   width: number | undefined = undefined;
+  /** How the subtopics of this topic are numbered; undefined = not at all. */
+  numbering: Numbering | undefined = undefined;
 
   /** Bumped whenever something that affects the measured size changes. */
   ver = 0;
@@ -156,6 +171,7 @@ export class MNode {
   mLv = -1;
   mEpoch = -1;
   mBox = false;
+  mNum = '';
   lines: string[] = NO_LINES;
   lab: LabelBox[] = NO_LABELS; // label chips, relative to the box
   w = 0; // box size
@@ -169,6 +185,7 @@ export class MNode {
   shp: Shape = 'none'; // the outline that is drawn
   rad = 0; // corner radius of that outline
   tc = false; // the lines are centered in the text block
+  nw = 0; // room the number takes in front of the text
 
   // ---- layout result (owned by layout) ----
   depth = 0;
@@ -181,6 +198,7 @@ export class MNode {
   sumN = 0; // active summary topic: number of siblings it brackets (0 otherwise)
   cover: MNode | null = null; // the summary topic that brackets this node
   idx = 0; // position among its siblings
+  num = ''; // its number among its siblings, as shown ("2." or "1.2"); empty when they are not numbered
   branch = ''; // resolved branch color
   x = 0; // target position (top-left, world space)
   y = 0;
@@ -249,7 +267,8 @@ export type PropKey =
   | 'boundary'
   | 'sum'
   | 'style'
-  | 'width';
+  | 'width'
+  | 'numbering';
 export type RelKey = 'from' | 'to' | 'text' | 'bend';
 export type MetaKey = 'theme' | 'layout';
 const MEASURED: ReadonlySet<PropKey> = new Set<PropKey>(['text', 'markers', 'note', 'link', 'labels', 'todo', 'style', 'width']);
@@ -634,6 +653,7 @@ export function toData(n: MNode, ids?: ReadonlySet<MNode>): NodeData {
   if (n.sum !== undefined) d.summary = n.sum;
   if (n.style) d.style = { ...n.style };
   if (n.width !== undefined) d.width = n.width;
+  if (n.numbering) d.numbering = { ...n.numbering };
   if (n.children.length) d.children = n.children.map((c) => toData(c, ids));
   return d;
 }
@@ -670,6 +690,59 @@ export function cleanStyle(raw: unknown): TopicStyle | undefined {
   if (r.strike === true) s.strike = true;
   if (typeof r.size === 'number' && Number.isFinite(r.size)) s.size = Math.max(MIN_SIZE, Math.min(MAX_SIZE, Math.round(r.size)));
   return Object.keys(s).length ? s : undefined;
+}
+
+/** A numbering from untrusted data; undefined when it names no known format. */
+export function cleanNumbering(raw: unknown): Numbering | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (!NUMBER_FORMATS.includes(r.format as NumberFormat)) return undefined;
+  return r.tiered === true ? { format: r.format as NumberFormat, tiered: true } : { format: r.format as NumberFormat };
+}
+
+const ROMAN: readonly [number, string][] = [
+  [1000, 'M'],
+  [900, 'CM'],
+  [500, 'D'],
+  [400, 'CD'],
+  [100, 'C'],
+  [90, 'XC'],
+  [50, 'L'],
+  [40, 'XL'],
+  [10, 'X'],
+  [9, 'IX'],
+  [5, 'V'],
+  [4, 'IV'],
+  [1, 'I'],
+];
+
+/** The `n`th number (from 1) in a format: 3, C, c, III or iii. Letters go on as AA, AB … after Z. */
+export function formatNumber(n: number, format: NumberFormat): string {
+  if (format === 'arabic' || n < 1) return String(n);
+  if (format === 'upper' || format === 'lower') {
+    let s = '';
+    for (let v = n; v > 0; v = Math.floor((v - 1) / 26)) s = String.fromCharCode(65 + ((v - 1) % 26)) + s;
+    return format === 'upper' ? s : s.toLowerCase();
+  }
+  if (n > 3999) return String(n);
+  let s = '';
+  let v = n;
+  for (const [value, sign] of ROMAN) {
+    while (v >= value) {
+      s += sign;
+      v -= value;
+    }
+  }
+  return format === 'roman' ? s : s.toLowerCase();
+}
+
+/**
+ * The number shown in front of the `count`th numbered subtopic of a topic
+ * whose own number is `own`: "3." — or "2.3" when the numbers are tiered.
+ */
+export function numberLabel(count: number, numbering: Numbering, own: string): string {
+  const n = formatNumber(count, numbering.format);
+  return numbering.tiered && own ? own.replace(/\.$/, '') + '.' + n : n + '.';
 }
 
 /** The hand-set width of a topic's text block, from untrusted data. */
@@ -733,6 +806,7 @@ export function fromData(data: unknown, byId?: Map<string, MNode>): MNode {
   if (typeof d.summary === 'number' && Number.isInteger(d.summary) && d.summary >= 1) n.sum = d.summary;
   n.style = cleanStyle(d.style);
   n.width = cleanWidth(d.width);
+  n.numbering = cleanNumbering(d.numbering);
   if (Array.isArray(d.children)) {
     for (const c of d.children) {
       const k = fromData(c, byId);

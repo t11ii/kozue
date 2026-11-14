@@ -22,6 +22,7 @@ const GLOBAL_KEYS: Record<string, string> = {
   n: 'new',
   'S-n': 'newWindow',
   f: 'search',
+  'S-f': 'zen',
   '=': 'zoomIn',
   '+': 'zoomIn',
   'S-+': 'zoomIn',
@@ -67,6 +68,8 @@ export class Input {
   onIndicator: (node: MNode, part: 'note' | 'link', x: number, y: number) => void = () => {};
   /** The text of the selected relationship is to be edited. */
   onRelEdit: () => void = () => {};
+  /** Escape was pressed with nothing left for it to cancel. */
+  onIdleEscape: () => void = () => {};
 
   constructor(app: App) {
     this.app = app;
@@ -424,6 +427,17 @@ export class Input {
       this.run('replace');
       return;
     }
+    // Next / previous sheet: ⇧⌘] and ⇧⌘[ on the Mac, Ctrl+PageDown and Ctrl+PageUp elsewhere.
+    if (mod && !e.altKey) {
+      const next = isMac ? e.shiftKey && (key === '}' || key === ']') : key === 'PageDown';
+      const prev = isMac ? e.shiftKey && (key === '{' || key === '[') : key === 'PageUp';
+      if (next || prev) {
+        e.preventDefault();
+        if (ed.state) ed.commit();
+        this.run(next ? 'sheet.next' : 'sheet.prev');
+        return;
+      }
+    }
     if (mod && !e.altKey) {
       const id = GLOBAL_KEYS[(e.shiftKey ? 'S-' : '') + key];
       if (id) {
@@ -514,6 +528,7 @@ export class Input {
       else if (key === 'b' && e.shiftKey) id = 'boundary';
       else if (key === ';') id = 'focusBranch';
       else if (key === '/') id = 'toggleCollapse';
+      else if (key === 'Backspace' || key === 'Delete') id = 'deleteSingle';
       else if (key === 'Enter') id = 'addParent';
       else if (key === 'k') id = 'editLink';
       else if (key === 'e' && e.shiftKey) id = 'editNote';
@@ -565,6 +580,7 @@ export class Input {
         if (app.connect) app.cancelConnect();
         else if (app.selRel) app.selectRel(null);
         else if (app.sel.length > 1 && app.primary) app.select([app.primary]);
+        else this.onIdleEscape();
         return;
     }
   }

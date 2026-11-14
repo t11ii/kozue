@@ -155,6 +155,36 @@ export async function runSelfTest(app: App, dir: string): Promise<void> {
     for (let i = 0; i < 5; i++) app.doc.undo();
     check('styles undone', styled.style === undefined && styled.width === undefined && Object.keys(app.doc.style).length === 0);
     report.style = { png: styledPng.bytes.length, editFont };
+
+    // Numbered topics, a topic removed without its subtopics, and a second sheet in the file.
+    app.select([root.children[1]]);
+    app.setNumbering('arabic');
+    check('numbering', root.children[0].num === '1.' && root.children[1].num === '2.' && root.children[1].nw > 0);
+    app.undo();
+    const mains = root.children.length;
+    const kids = branch.children.length;
+    app.select([branch]);
+    app.deleteSingle();
+    check('topic removed, subtopics kept', root.children.length === mains - 1 + kids && branch.parent === null);
+    app.undo();
+    check('and restored', root.children.length === mains && branch.parent === root && branch.children.length === kids);
+    const firstDoc = app.doc;
+    app.addSheet();
+    app.addChild();
+    app.editor.el.value = 'on the second sheet';
+    app.editor.el.dispatchEvent(new Event('input'));
+    app.editor.commit();
+    check('second sheet', app.book.sheets.length === 2 && app.doc !== firstDoc && app.doc.root.children[0]?.text === 'on the second sheet');
+    const bookData = app.book.toData();
+    await write('selftest-sheets.kozue', enc.encode(serializeNative(bookData)));
+    const bookBack = await importFile('selftest-sheets.kozue', (await readPath(`${dir}/selftest-sheets.kozue`)).bytes);
+    check('sheets are saved and loaded', bookBack.sheets?.length === 2 && bookBack.active === 1);
+    const xbook = await importFile('selftest-sheets.xmind', await toXmind(bookData, 'selftest'));
+    check('xmind keeps the sheets', xbook.sheets?.length === 2);
+    app.undo();
+    app.undo();
+    check('undo takes the sheet away again', app.book.sheets.length === 1 && app.doc === firstDoc);
+    report.sheets = { bytes: serializeNative(bookData).length };
     report.exports = {
       png: png.bytes.length,
       pdf: pdf.bytes.length,

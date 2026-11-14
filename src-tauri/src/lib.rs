@@ -165,6 +165,12 @@ fn selftest_dir() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// ZEN mode: the window fills the screen while it is on.
+#[tauri::command]
+fn set_fullscreen(window: tauri::Window, on: bool) -> Result<(), String> {
+    window.set_fullscreen(on).map_err(|e| e.to_string())
+}
+
 /// Ends a self-test run. Does nothing during normal use.
 #[tauri::command]
 fn exit_app(app: AppHandle, code: i32) {
@@ -283,6 +289,11 @@ fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<tauri::menu::Menu<ta
         )?)
         .item(&item("delete", t("Delete", "削除"), None)?)
         .item(&item(
+            "deleteSingle",
+            t("Delete Topic Only", "トピックのみ削除"),
+            None,
+        )?)
+        .item(&item(
             "selectAll",
             t("Select All", "すべてを選択"),
             Some("CmdOrCtrl+A"),
@@ -389,6 +400,12 @@ fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<tauri::menu::Menu<ta
         .item(&style)
         .separator()
         .item(&item(
+            "sheet.fromTopic",
+            t("New Sheet from Topic", "トピックから新規シート"),
+            None,
+        )?)
+        .separator()
+        .item(&item(
             "toggleCollapse",
             t("Collapse / Expand", "折りたたむ / 展開"),
             Some("CmdOrCtrl+/"),
@@ -462,8 +479,40 @@ fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<tauri::menu::Menu<ta
         )?)
         .build()?;
 
+    let sheet = SubmenuBuilder::new(app, t("Sheet", "シート"))
+        .item(&item("sheet.new", t("New Sheet", "新規シート"), None)?)
+        .item(&item("sheet.rename", t("Rename…", "名前を変更…"), None)?)
+        .item(&item(
+            "sheet.duplicate",
+            t("Duplicate Sheet", "シートを複製"),
+            None,
+        )?)
+        .item(&item(
+            "sheet.delete",
+            t("Delete Sheet", "シートを削除"),
+            None,
+        )?)
+        .separator()
+        .item(&item(
+            "sheet.next",
+            t("Next Sheet", "次のシート"),
+            Some("CmdOrCtrl+Shift+]"),
+        )?)
+        .item(&item(
+            "sheet.prev",
+            t("Previous Sheet", "前のシート"),
+            Some("CmdOrCtrl+Shift+["),
+        )?)
+        .build()?;
+
     let view = SubmenuBuilder::new(app, t("View", "表示"))
         .item(&structure)
+        .item(&sheet)
+        .item(&item(
+            "zen",
+            t("ZEN Mode", "ZEN モード"),
+            Some("CmdOrCtrl+Shift+F"),
+        )?)
         .item(&item(
             "focusBranch",
             t(
@@ -585,6 +634,7 @@ pub fn run() {
             take_open_requests,
             set_menu_language,
             selftest_dir,
+            set_fullscreen,
             exit_app
         ])
         .setup(|app| {

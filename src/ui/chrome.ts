@@ -3,11 +3,13 @@
 
 import type { App } from '../app/app.ts';
 import type { ExportKind, Files } from '../app/files.ts';
+import type { Sheet } from '../core/book.ts';
+import { MAX_SHEET_NAME } from '../core/book.ts';
 import type { MNode } from '../core/model.ts';
 import { BRANCH_KINDS, LAYOUT_KINDS } from '../core/structures.ts';
 import type { MsgKey } from '../i18n.ts';
 import { t } from '../i18n.ts';
-import { isMac, isTauri, openExternal, setWindowTitle } from '../platform.ts';
+import { isMac, isTauri, openExternal, setFullscreen, setWindowTitle } from '../platform.ts';
 import { clear, h, keepFocus } from './dom.ts';
 import { icons } from './icons.ts';
 import type { MenuItem } from './menu.ts';
@@ -36,6 +38,15 @@ export class Chrome {
   private searchCount!: HTMLElement;
   private hintEl!: HTMLElement;
   private modeEl!: HTMLElement;
+  private sheetsEl!: HTMLElement;
+  private zenExit!: HTMLElement;
+  /** ZEN mode: nothing but the map, on the whole screen. */
+  zen = false;
+  private panelWasOpen = false;
+  private zenTimer = 0;
+  /** What the sheet tabs show, to rebuild them only when it changes. */
+  private sheetsShown = '';
+  private renaming = false;
   private popover: HTMLElement | null = null;
   private floating: HTMLElement[] = [];
 
@@ -52,12 +63,17 @@ export class Chrome {
     this.build();
     app.on((what) => {
       if (what === 'doc' || what === 'edit') this.syncDoc();
+      if (what === 'doc' || what === 'sheets') this.syncSheets();
       if (what === 'view') this.syncView();
       if (what === 'search') this.syncSearch();
       if (what === 'mode') this.syncModes();
       if (what === 'selection' || what === 'doc') this.closePopover();
     });
     files.onChange(() => this.syncDoc());
+    // A browser leaves full screen on its own (Esc): ZEN mode ends with it.
+    document.addEventListener('fullscreenchange', () => {
+      if (!isTauri && this.zen && !document.fullscreenElement) this.toggleZen(false);
+    });
   }
 
   /** Rebuilds all chrome (after a language change). */
@@ -85,10 +101,19 @@ export class Chrome {
     this.float(this.hintEl);
     this.modeEl = h('div', { class: 'modebar' });
     this.float(this.modeEl);
+    this.sheetsEl = h('div', { class: 'sheets' });
+    this.float(this.sheetsEl);
+    this.zenExit = h('button', { class: 'zen-exit' }, t('zenExit'), h('span', { class: 'zen-key' }, 'Esc'));
+    keepFocus(this.zenExit);
+    this.zenExit.addEventListener('click', () => this.toggleZen(false));
+    this.float(this.zenExit);
+    this.sheetsShown = '';
+    this.renaming = false;
     this.syncDoc();
     this.syncView();
     this.syncSearch();
     this.syncModes();
+    this.syncSheets();
   }
 
   private float(el: HTMLElement): void {
@@ -254,10 +279,10 @@ export class Chrome {
   private syncDoc(): void {
     const app = this.app;
     const editing = app.editor.state !== null;
-    this.undoBtn.disabled = !editing && !app.doc.canUndo;
-    this.redoBtn.disabled = !editing && !app.doc.canRedo;
+    this.undoBtn.disabled = !editing && !app.canUndo;
+    this.redoBtn.disabled = !editing && !app.canRedo;
     const name = this.files.displayName;
-    const dirty = app.doc.dirty;
+    const dirty = app.book.dirty;
     if (this.nameEl.textContent !== name) this.nameEl.textContent = name;
     this.dotEl.classList.toggle('on', dirty);
     const title = (dirty ? '• ' : '') + name + (isTauri ? '' : ' — Kozue');
@@ -293,6 +318,178 @@ export class Chrome {
     if (app.connect) pill(icons.relationship, t('connectHint'), 'cancel', () => app.cancelConnect());
     if (app.focus) pill(icons.focus, t('focusOn'), 'showAll', () => app.setFocus(null));
     if (app.filter) pill(icons.filter, t('filterOn', { n: app.filterCount }), 'clearFilter', () => app.setFilter(null));
+  }
+
+  // --------------------------------------------------------------------- zen
+
+  /** Hides everything but the map and lets the window fill the screen — or brings it all back. */
+  toggleZen(on: boolean = !this.zen): void {
+    if (on === this.zen) return;
+    this.zen = on;
+    const app = this.app;
+    this.closePopover();
+    document.documentElement.classList.toggle('zen', on);
+    if (on) {
+      if (this.searchEl.classList.contains('open')) this.closeSearch();
+      this.panelWasOpen = this.panel.open;
+      if (this.panel.open) this.panel.toggle(false, false);
+      app.insets.top = 16;
+      // The way out shows for a moment, and whenever the pointer finds it.
+      this.zenExit.classList.add('show');
+      clearTimeout(this.zenTimer);
+      this.zenTimer = window.setTimeout(() => this.zenExit.classList.remove('show'), 2600);
+    } else {
+      clearTimeout(this.zenTimer);
+      this.zenExit.classList.remove('show');
+      app.insets.top = 56;
+      if (this.panelWasOpen) this.panel.toggle(true, false);
+    }
+    void setFullscreen(on);
+    app.emit('view');
+    app.requestRender();
+    app.editor.focus();
+  }
+
+  // ------------------------------------------------------------------ sheets
+
+  /** What a sheet without a name of its own goes by: its central topic, else its number. */
+  private autoLabel(sheet: Sheet, index: number): string {
+    const title = sheet.doc.root.text.split('\n')[0].trim();
+    return title ? (title.length > 22 ? title.slice(0, 21) + '…' : title) : t('sheetN', { n: index + 1 });
+  }
+
+  /** What a sheet goes by: the name it was given, else its automatic one. */
+  sheetLabel(sheet: Sheet, index: number = this.app.book.indexOf(sheet)): string {
+    return sheet.name || this.autoLabel(sheet, index);
+  }
+
+  /** The tabs at the bottom: one for each sheet, and a button that adds one. */
+  private syncSheets(): void {
+    const app = this.app;
+    const book = app.book;
+    const bar = this.sheetsEl;
+    if (this.renaming) return; // a name is being typed into one of the tabs
+    const labels = book.sheets.map((s, i) => this.sheetLabel(s, i));
+    const shown = JSON.stringify([labels, book.indexOf(), book.sheets.map((s) => s.doc.root.id)]);
+    if (shown === this.sheetsShown) return;
+    this.sheetsShown = shown;
+    clear(bar);
+    const list = h('div', { class: 'sheet-list' });
+    book.sheets.forEach((sheet, i) => {
+      const tab = h('button', { class: 'sheet-tab' + (sheet === book.active ? ' active' : ''), title: labels[i] }, labels[i]);
+      keepFocus(tab);
+      tab.addEventListener('click', () => app.showSheet(sheet));
+      tab.addEventListener('dblclick', () => this.renameSheet(sheet));
+      tab.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        this.sheetMenu(sheet, e.clientX, e.clientY);
+      });
+      tab.addEventListener('pointerdown', (e) => {
+        if (e.button === 0 && book.sheets.length > 1) this.dragSheet(sheet, tab, list, e);
+      });
+      list.append(tab);
+    });
+    bar.append(list, this.button(icons.plus, t('newSheet'), 'sheet.new', 'tip-up tip-start sheet-add'));
+    list.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /** Lets the name of a sheet be typed into its tab. */
+  renameSheet(sheet: Sheet = this.app.book.active): void {
+    const app = this.app;
+    const index = app.book.indexOf(sheet);
+    const tab = this.sheetsEl.querySelectorAll<HTMLElement>('.sheet-tab')[index];
+    if (!tab || this.renaming) return;
+    app.editor.commit();
+    // Typing exactly the automatic name keeps the sheet without a name of its own.
+    const auto = this.autoLabel(sheet, index);
+    const input = h('input', {
+      class: 'sheet-input',
+      type: 'text',
+      maxlength: String(MAX_SHEET_NAME),
+      spellcheck: 'false',
+      title: t('sheetNameHint'),
+      placeholder: auto,
+    });
+    input.value = sheet.name || auto;
+    input.style.width = Math.max(64, tab.offsetWidth + 14) + 'px';
+    tab.replaceWith(input);
+    this.renaming = true;
+    input.focus();
+    input.select();
+    let over = false;
+    const finish = (commit: boolean): void => {
+      if (over) return;
+      over = true;
+      this.renaming = false;
+      this.sheetsShown = '';
+      const name = input.value.replace(/\s+/g, ' ').trim();
+      if (commit) app.renameSheet(sheet, name === auto ? '' : name);
+      this.syncSheets();
+      app.editor.focus();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        e.preventDefault();
+        finish(e.key === 'Enter');
+      }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  private sheetMenu(sheet: Sheet, x: number, y: number): void {
+    const app = this.app;
+    const book = app.book;
+    const i = book.indexOf(sheet);
+    this.menus.show(
+      [
+        { label: t('renameSheet'), action: () => this.renameSheet(sheet) },
+        { label: t('duplicateSheet'), action: () => app.duplicateSheet(sheet) },
+        SEP,
+        { label: t('moveSheetLeft'), disabled: i === 0, action: () => app.moveSheet(sheet, i - 1) },
+        { label: t('moveSheetRight'), disabled: i === book.sheets.length - 1, action: () => app.moveSheet(sheet, i + 1) },
+        SEP,
+        { label: t('deleteSheet'), disabled: book.sheets.length < 2, danger: true, action: () => app.deleteSheet(sheet) },
+      ],
+      { x, y },
+    );
+  }
+
+  /** Dragging a tab along the bar moves its sheet; a line shows where it would land. */
+  private dragSheet(sheet: Sheet, tab: HTMLElement, list: HTMLElement, down: PointerEvent): void {
+    const app = this.app;
+    const tabs = [...list.querySelectorAll<HTMLElement>('.sheet-tab')];
+    const others = tabs.filter((el) => el !== tab);
+    let target = -1;
+    const mark = (): void => {
+      for (const el of tabs) el.classList.remove('drop-before', 'drop-after');
+      if (target < 0) return;
+      if (target < others.length) others[target].classList.add('drop-before');
+      else others[others.length - 1].classList.add('drop-after');
+    };
+    const move = (e: PointerEvent): void => {
+      if (target < 0 && Math.abs(e.clientX - down.clientX) < 6) return;
+      tab.classList.add('dragging');
+      // It lands in front of the first other tab whose middle lies to the right of the pointer.
+      target = others.filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.left + r.width / 2 < e.clientX;
+      }).length;
+      mark();
+    };
+    const up = (): void => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      const to = target;
+      target = -1;
+      mark();
+      tab.classList.remove('dragging');
+      if (to >= 0) app.moveSheet(sheet, to);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   }
 
   // ---------------------------------------------------------------- popovers
@@ -396,11 +593,27 @@ export class Chrome {
           action: () => this.app.setLayout(kind),
         })),
       },
+      {
+        label: t('sheet'),
+        submenu: [
+          this.item('newSheet', 'sheet.new'),
+          this.item('sheetFromTopic', 'sheet.fromTopic', undefined, {
+            disabled: !this.app.primary || this.app.primary === this.app.doc.root,
+          }),
+          this.item('renameSheet', 'sheet.rename'),
+          this.item('duplicateSheet', 'sheet.duplicate'),
+          this.item('deleteSheet', 'sheet.delete', undefined, { disabled: this.app.book.sheets.length < 2, danger: true }),
+          SEP,
+          this.item('nextSheet', 'sheet.next', isMac ? 'mod+shift+]' : 'mod+pagedown', { disabled: this.app.book.sheets.length < 2 }),
+          this.item('prevSheet', 'sheet.prev', isMac ? 'mod+shift+[' : 'mod+pageup', { disabled: this.app.book.sheets.length < 2 }),
+        ],
+      },
       this.item(this.app.focus ? 'showAll' : 'focusBranch', 'focusBranch', 'mod+;', {
         disabled: !this.app.focus && (!this.app.primary || this.app.primary === this.app.doc.root),
       }),
       this.item('expandAll', 'expandAll'),
       this.item('collapseAll', 'collapseAll'),
+      this.item('zen', 'zen', 'mod+shift+f'),
       SEP,
       this.item('findReplace', 'replace', isMac ? 'mod+alt+f' : 'mod+h'),
       this.item('shortcuts', 'shortcuts'),
@@ -463,6 +676,7 @@ export class Chrome {
         this.item('editLink', 'editLink', 'mod+k', { disabled: !single }),
         this.item(node.collapsed ? 'expand' : 'collapse', 'toggleCollapse', 'mod+/', { disabled: !foldable }),
         this.item(app.focus === node ? 'showAll' : 'focusBranch', 'focusBranch', 'mod+;', { disabled: isRoot || !single }),
+        this.item('sheetFromTopic', 'sheet.fromTopic', undefined, { disabled: isRoot || !single }),
         {
           label: t('style'),
           submenu: [
@@ -501,6 +715,10 @@ export class Chrome {
         this.item('duplicate', 'duplicate', 'mod+d', { disabled: isRoot }),
         SEP,
         this.item('delete', 'delete', 'delete', { disabled: isRoot, danger: true }),
+        this.item('deleteSingle', 'deleteSingle', 'mod+delete', {
+          disabled: isRoot || !app.sel.some((n) => n.parent && n.children.length > 0),
+          danger: true,
+        }),
       ];
     }
     this.menus.show(items, { x, y });

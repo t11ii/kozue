@@ -40,7 +40,9 @@ const chrome = new Chrome(app, files, panel, $('toolbar'), overlays);
 input.onContextMenu = (x, y, node) => chrome.contextMenu(x, y, node);
 input.onIndicator = (node, part, x, y) => chrome.indicator(node, part, x, y);
 input.onRelEdit = () => panel.focusRel();
+input.onIdleEscape = () => chrome.toggleZen(false);
 app.notify = (what) => dialogs.toast(t(what));
+app.centralText = () => t('central');
 chrome.notify = (message) => dialogs.toast(message);
 
 // ---------------------------------------------------------------- commands
@@ -63,6 +65,8 @@ app.register('editRel', () => {
   if (app.selRel) panel.focusRel();
 });
 app.register('editStyle', () => panel.showStyle());
+app.register('sheet.rename', () => chrome.renameSheet());
+app.register('zen', () => chrome.toggleZen());
 app.register('togglePanel', () => panel.toggle());
 for (const kind of LAYOUT_KINDS) app.register('layout.' + kind, () => app.setLayout(kind));
 app.register('editNote', () => {
@@ -104,6 +108,7 @@ const TEXT_COMMANDS = new Set(['undo', 'redo', 'selectAll']);
 /** Menu commands that only make sense for the map. */
 const MAP_COMMANDS = new Set([
   'delete',
+  'deleteSingle',
   'duplicate',
   'addChild',
   'addSibling',

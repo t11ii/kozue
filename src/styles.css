@@ -482,6 +482,161 @@ svg {
   right: 292px;
 }
 
+/* ------------------------------------------------------------- zen mode */
+
+html.zen #toolbar,
+html.zen #panel,
+html.zen .zoom,
+html.zen .sheets,
+html.zen .hint,
+html.zen .search {
+  display: none;
+}
+
+html.zen .modebar {
+  top: 14px;
+}
+
+.zen-exit {
+  display: none;
+}
+
+html.zen .zen-exit {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  padding: 0 7px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--card);
+  box-shadow: var(--shadow-soft);
+  color: var(--muted);
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.3s;
+  z-index: 9;
+}
+
+html.zen .zen-exit:hover,
+html.zen .zen-exit.show {
+  opacity: 1;
+}
+
+.zen-key {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--field);
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------- sheet tabs */
+
+.sheets {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 250px);
+  height: 36px;
+  padding: 0 3px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  box-shadow: var(--shadow-soft);
+  z-index: 8;
+}
+
+.panel-open .sheets {
+  max-width: calc(100% - 530px);
+}
+
+.sheet-list {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.sheet-list::-webkit-scrollbar {
+  display: none;
+}
+
+.sheet-tab {
+  flex: none;
+  max-width: 180px;
+  height: 28px;
+  padding: 0 11px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+
+.sheet-tab:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.sheet-tab.active {
+  background: var(--field);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.sheet-tab.dragging {
+  opacity: 0.45;
+}
+
+.sheet-tab.drop-before {
+  box-shadow: -2px 0 0 var(--accent);
+}
+
+.sheet-tab.drop-after {
+  box-shadow: 2px 0 0 var(--accent);
+}
+
+.sheet-input {
+  flex: none;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.sheets .sheet-add {
+  height: 28px;
+  min-width: 28px;
+  padding: 0 5px;
+  color: var(--muted);
+}
+
+.sheets .sheet-add svg {
+  width: 16px;
+  height: 16px;
+}
+
 .hint {
   position: absolute;
   left: 50%;
@@ -964,6 +1119,19 @@ svg {
 
 .seg.two {
   grid-template-columns: 1fr 1fr;
+}
+
+.seg.six {
+  grid-template-columns: 1.5fr repeat(5, 1fr);
+}
+
+.seg.six .seg-btn {
+  height: 30px;
+  font-size: 12.5px;
+}
+
+#panel .btn-row.after-seg {
+  margin-top: 7px;
 }
 
 .seg.two .seg-btn {

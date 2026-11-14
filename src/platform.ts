@@ -245,6 +245,32 @@ export function openExternal(url: string): void {
   else window.open(url, '_blank', 'noopener,noreferrer');
 }
 
+/** The part of the Keyboard Lock API used here (Chromium browsers). */
+type KeyboardLock = { lock?: (keys: string[]) => Promise<void>; unlock?: () => void };
+
+/** Lets the window fill the whole screen, or ends that. Resolves to false when it could not be done. */
+export async function setFullscreen(on: boolean): Promise<boolean> {
+  try {
+    if (isTauri) {
+      await invoke('set_fullscreen', { on });
+      return true;
+    }
+    const keyboard = (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
+    if (on) {
+      await document.documentElement.requestFullscreen();
+      // A browser leaves full screen on Escape. Where it lets a page keep the key (then
+      // a long press leaves full screen), Escape goes on cancelling edits as usual.
+      await keyboard?.lock?.(['Escape']).catch(() => {});
+    } else if (document.fullscreenElement) {
+      keyboard?.unlock?.();
+      await document.exitFullscreen();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function setWindowTitle(title: string): void {
   document.title = title;
   if (isTauri) void getCurrentWebviewWindow().setTitle(title);

@@ -80,6 +80,8 @@ export const MARK_GAP = 6;
 /** Note / link indicator size and spacing. */
 export const ICON = 14;
 export const ICON_STEP = 19;
+/** Gap between a topic's number and its text. */
+export const NUM_GAP = 5;
 /** To-do checkbox size and the room it takes in front of the text. */
 export const TODO = 15;
 export const TODO_STEP = 21;

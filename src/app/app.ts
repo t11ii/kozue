@@ -2,10 +2,12 @@
 // rendering, and implements every editing command. UI chrome and input
 // handlers call into it and subscribe to its change events.
 
+import type { BookTxn } from '../core/book.ts';
+import { Book, Sheet } from '../core/book.ts';
 import type { Bounds, LayoutOpts } from '../core/layout.ts';
 import { layoutDoc } from '../core/layout.ts';
 import { toggleMarker } from '../core/markers.ts';
-import type { ColorRef, LayoutKind, MapStyle, NodeData, Side, TopicStyle, Txn } from '../core/model.ts';
+import type { ColorRef, LayoutKind, MapStyle, NodeData, NumberFormat, Side, TopicStyle, Txn } from '../core/model.ts';
 import {
   Doc,
   MAX_BEND,
@@ -98,7 +100,7 @@ import {
 import { TextEditor } from './editor.ts';
 import { CanvasMeasurer, MAX_ZOOM, MIN_ZOOM, View } from './view.ts';
 
-export type AppEvent = 'doc' | 'selection' | 'view' | 'theme' | 'edit' | 'search' | 'mode';
+export type AppEvent = 'doc' | 'selection' | 'view' | 'theme' | 'edit' | 'search' | 'mode' | 'sheets';
 export type HitPart = 'body' | 'toggle' | 'note' | 'link' | 'todo' | 'width';
 export type { Arrow } from '../core/structures.ts';
 export type { SearchOpts } from '../core/text.ts';
@@ -111,7 +113,7 @@ export interface Filter {
 }
 
 /** Short messages the app asks the UI to show. */
-export type Notice = 'noSummaryHere' | 'styleCopied';
+export type Notice = 'noSummaryHere' | 'styleCopied' | 'sheetBack' | 'sheetGone';
 
 export interface Hit {
   node: MNode;
@@ -196,7 +198,19 @@ function segDist(x: number, y: number, ax: number, ay: number, bx: number, by: n
   return Math.hypot(x - ax - dx * t, y - ay - dy * t);
 }
 
+/** How a sheet was being looked at when another one took its place. */
+interface SheetView {
+  panX: number;
+  panY: number;
+  zoom: number;
+  sel: MNode[];
+  focus: MNode | null;
+}
+
 export class App {
+  /** The file: one or more sheets. */
+  book!: Book;
+  /** The map of the sheet on show. */
   doc!: Doc;
   theme: Theme = themeById(DEFAULT_THEME);
   readonly view: View;
@@ -234,6 +248,8 @@ export class App {
   filterCount = 0;
   /** Shows a short message to the user (provided by the UI layer). */
   notify: (what: Notice) => void = () => {};
+  /** Text of the central topic of a new sheet (provided by the UI layer, which knows the language). */
+  centralText: () => string = () => '';
 
   private epoch = 1;
   private stamp = 0;
@@ -249,6 +265,14 @@ export class App {
   private keep: Set<MNode> | null = null;
   private relIds = new WeakMap<Rel, number>();
   private relSeq = 0;
+  private views = new WeakMap<Doc, SheetView>();
+  /**
+   * When each step of the histories (of a map, or of the sheets) was done and
+   * undone, so that undo and redo take them in the order they happened.
+   */
+  private done = new WeakMap<object, number>();
+  private undone = new WeakMap<object, number>();
+  private clock = 0;
   private clip: { text: string; data: NodeData[] } | null = null;
   private listeners: ((what: AppEvent) => void)[] = [];
   private commands = new Map<string, () => void>();
@@ -318,6 +342,7 @@ export class App {
       if (n) this.editor.begin(n, 'append');
     });
     c('delete', () => this.deleteSelection());
+    c('deleteSingle', () => this.deleteSingle());
     c('duplicate', () => this.duplicate());
     c('selectAll', () => {
       if (this.editor.state) this.editor.el.select();
@@ -352,12 +377,32 @@ export class App {
     c('copyStyle', () => this.copyStyle());
     c('pasteStyle', () => this.pasteStyle());
     c('styleToLevel', () => this.applyStyleToLevel());
+    c('sheet.new', () => this.addSheet());
+    c('sheet.fromTopic', () => this.sheetFromTopic());
+    c('sheet.duplicate', () => this.duplicateSheet());
+    c('sheet.delete', () => this.deleteSheet());
+    c('sheet.next', () => this.stepSheet(1));
+    c('sheet.prev', () => this.stepSheet(-1));
   }
 
   // ---------------------------------------------------------------- document
 
+  /** Replaces everything on show with a single map. */
   setDoc(doc: Doc): void {
+    this.setBook(Book.single(doc));
+  }
+
+  /** Replaces everything on show with a file of one or more sheets. */
+  setBook(book: Book): void {
     this.editor.abort();
+    this.book = book;
+    this.attach(book.active);
+    this.emit('sheets');
+  }
+
+  /** Puts a sheet on show: the way it was left if it was shown before, else fitted to the window. */
+  private attach(sheet: Sheet): void {
+    const doc = sheet.doc;
     this.doc = doc;
     doc.selection = () => this.sel;
     doc.onChange = (txn, kind) => this.onDocChange(txn, kind);
@@ -369,21 +414,118 @@ export class App {
     this.marquee = null;
     this.anim = null;
     this.viewAnim = null;
-    this.focus = null;
     this.selRel = null;
     this.connect = null;
     this.filter = null;
     this.keep = null;
     this.filterCount = 0;
-    this.sel = [doc.root];
+    const root = doc.root;
+    const seen = this.views.get(doc);
+    this.focus = seen?.focus && seen.focus !== root && isAttached(seen.focus, root) ? seen.focus : null;
+    const sel = seen ? seen.sel.filter((n) => isAttached(n, root)) : [];
+    this.sel = sel.length ? sel : [this.focus ?? root];
     this.selSet = new Set(this.sel);
     this.relayout(false);
+    this.pruneSelection();
     this.refreshSearch();
-    this.fit(false);
+    if (seen) this.setView(seen.panX, seen.panY, seen.zoom, false);
+    else this.fit(false);
     this.emit('theme');
     this.emit('doc');
     this.emit('selection');
     this.emit('mode');
+  }
+
+  /** Remembers how the sheet on show is being looked at, for when it is shown again. */
+  private leave(): void {
+    const v = this.viewGoal();
+    this.views.set(this.doc, { panX: v.panX, panY: v.panY, zoom: v.zoom, sel: this.sel.slice(), focus: this.focus });
+  }
+
+  // ------------------------------------------------------------------ sheets
+
+  showSheet(sheet: Sheet): void {
+    if (sheet === this.book.active || !this.book.sheets.includes(sheet)) return;
+    this.editor.commit();
+    this.leave();
+    this.book.active = sheet;
+    this.attach(sheet);
+    this.emit('sheets');
+  }
+
+  /** Shows the next (1) or the previous (-1) sheet, going round at the ends. */
+  stepSheet(delta: 1 | -1): void {
+    const list = this.book.sheets;
+    this.showSheet(list[(this.book.indexOf() + delta + list.length) % list.length]);
+  }
+
+  /** After the list of sheets changed: shows the sheet that is on show now and tells everyone. */
+  private sheetsChanged(was: Sheet): void {
+    if (this.book.active !== was) this.attach(this.book.active);
+    this.emit('sheets');
+    this.emit('doc'); // the file is different now: its saved state, the draft
+  }
+
+  /** Runs one change to the sheets of the file as a step that can be undone. */
+  private sheetOp(run: () => BookTxn | null): boolean {
+    this.editor.commit();
+    const was = this.book.active;
+    this.leave();
+    const txn = run();
+    if (!txn) return false;
+    this.done.set(txn, ++this.clock);
+    this.sheetsChanged(was);
+    return true;
+  }
+
+  /** Adds an empty sheet after the one on show, in the same theme and with the same map settings. */
+  addSheet(): void {
+    const doc = new Doc(new MNode(this.centralText()), this.doc.theme, 'map');
+    doc.style = { ...this.doc.style };
+    this.sheetOp(() => this.book.add(new Sheet(doc)));
+  }
+
+  /** Adds a sheet whose central topic is a copy of the selected topic, with everything below it. */
+  sheetFromTopic(): void {
+    const n = this.primary;
+    if (!n) return;
+    const from = this.doc;
+    const theme = themeById(from.theme);
+    // The new sheet has the structure that arranges the topic's branch where it is now.
+    const data = { theme: theme.id, layout: n.structure ?? n.pk, style: from.style, root: cloneForPaste(n) };
+    const doc = Doc.fromData(data, theme.id, theme.palette.length);
+    this.sheetOp(() => this.book.add(new Sheet(doc)));
+  }
+
+  duplicateSheet(sheet: Sheet = this.book.active): void {
+    const data = sheet.doc.toData();
+    const doc = Doc.fromData(data, data.theme, themeById(data.theme).palette.length);
+    this.sheetOp(() => this.book.add(new Sheet(doc, sheet.name ? sheet.name + ' 2' : ''), this.book.indexOf(sheet) + 1));
+  }
+
+  /** Removes a sheet (a file always keeps one). Undo brings it back. */
+  deleteSheet(sheet: Sheet = this.book.active): void {
+    this.sheetOp(() => this.book.remove(sheet));
+  }
+
+  renameSheet(sheet: Sheet, name: string): void {
+    this.sheetOp(() => this.book.rename(sheet, name));
+  }
+
+  moveSheet(sheet: Sheet, to: number): void {
+    this.sheetOp(() => this.book.move(sheet, to));
+  }
+
+  /** Undoes or redoes the latest change to the sheets themselves. */
+  private stepSheets(redo: boolean): void {
+    const was = this.book.active;
+    this.leave();
+    const txn = redo ? this.book.redo() : this.book.undo();
+    if (!txn) return;
+    (redo ? this.done : this.undone).set(txn, ++this.clock);
+    this.sheetsChanged(was);
+    // A sheet that comes or goes is worth a word: the change may be easy to miss.
+    if (txn.op.k === 'add' || txn.op.k === 'del') this.notify((txn.op.k === 'del') !== redo ? 'sheetBack' : 'sheetGone');
   }
 
   /** The topic the view starts from: the central topic, or the branch shown on its own. */
@@ -393,6 +535,10 @@ export class App {
 
   private onDocChange(txn: Txn, kind: 'do' | 'undo' | 'redo'): void {
     const root = this.doc.root;
+    if (kind === 'undo') this.undone.set(txn, ++this.clock);
+    else this.done.set(txn, ++this.clock);
+    // Something new was done: what was undone of the sheets cannot be redone on top of it.
+    if (kind === 'do') this.book.redoStack.length = 0;
     let themeChanged = false;
     let layoutChanged = false;
     let lookChanged = false;
@@ -436,13 +582,34 @@ export class App {
     this.emit('doc');
   }
 
+  get canUndo(): boolean {
+    return this.doc.canUndo || this.book.undoStack.length > 0;
+  }
+
+  get canRedo(): boolean {
+    return this.doc.canRedo || this.book.redoStack.length > 0;
+  }
+
+  /** Undoes the latest step: of the map on show, or of the sheets — whichever happened last. */
   undo(): void {
-    if (this.editor.state) document.execCommand('undo');
+    if (this.editor.state) {
+      document.execCommand('undo');
+      return;
+    }
+    const b = this.book.undoStack.at(-1);
+    const d = this.doc.undoStack.at(-1);
+    if (b && (!d || (this.done.get(b) ?? 0) > (this.done.get(d) ?? 0))) this.stepSheets(false);
     else this.doc.undo();
   }
 
   redo(): void {
-    if (this.editor.state) document.execCommand('redo');
+    if (this.editor.state) {
+      document.execCommand('redo');
+      return;
+    }
+    const b = this.book.redoStack.at(-1);
+    const d = this.doc.redoStack.at(-1);
+    if (b && (!d || (this.undone.get(b) ?? 0) > (this.undone.get(d) ?? 0))) this.stepSheets(true);
     else this.doc.redo();
   }
 
@@ -1218,6 +1385,37 @@ export class App {
     this.reveal(after);
   }
 
+  /** Removes the selected topics but keeps their subtopics, which take their place. */
+  deleteSingle(): void {
+    this.editor.commit();
+    const doc = this.doc;
+    const root = doc.root;
+    // The deepest first: a topic's subtopics are settled before the topic above it goes.
+    const nodes = inDocOrder(root, this.sel)
+      .filter((n) => n !== root)
+      .reverse();
+    if (!nodes.length) return;
+    const gone = new Set(nodes);
+    const kept = new Set<MNode>();
+    let home: MNode = root;
+    doc.run('Delete topic', () => {
+      for (const n of nodes) {
+        const parent = n.parent!;
+        // The subtopics line up where the topic was, in their order. (A summary topic
+        // among them becomes an ordinary topic: what it summed up has moved.)
+        for (const k of n.children.slice()) {
+          this.moveInto(k, parent, n, n.side);
+          kept.add(k);
+        }
+        doc.remove(n);
+        home = parent;
+      }
+      const stay = [...kept].filter((k) => !gone.has(k) && isAttached(k, root));
+      this.setSelection(stay.length ? stay : [isAttached(home, root) ? home : root]);
+    });
+    if (this.primary) this.reveal(this.primary);
+  }
+
   duplicate(): void {
     this.editor.commit();
     const doc = this.doc;
@@ -1621,6 +1819,41 @@ export class App {
     const doc = this.doc;
     doc.run('Bend relationship', () => doc.setRel(rel, 'bend', Math.abs(bend) < 5 ? 0 : bend), { merge: 'bend:' + grab });
     this.requestRender();
+  }
+
+  // ---------------------------------------------------------------- numbering
+
+  /** The topics whose subtopics a numbering command is about: the parents of the selection. */
+  private numbered(): MNode[] {
+    return [...new Set(this.sel.map((n) => n.parent).filter((p): p is MNode => p !== null))];
+  }
+
+  /**
+   * Numbers the selected topics together with their siblings (`null` takes the
+   * numbers away). The numbering belongs to their parent, so topics added later
+   * are numbered as well.
+   */
+  setNumbering(format: NumberFormat | null): void {
+    const doc = this.doc;
+    const parents = this.numbered();
+    if (!parents.length) return;
+    doc.run('Numbering', () => {
+      for (const p of parents) {
+        if (format === null) doc.set(p, 'numbering', undefined);
+        else if (p.numbering?.format !== format) doc.set(p, 'numbering', p.numbering?.tiered ? { format, tiered: true } : { format });
+      }
+    });
+  }
+
+  /** Lets the numbers of the selected topics carry the number of their parent in front (2.1, 2.2 …), or not. */
+  setNumberingTiered(on: boolean): void {
+    const doc = this.doc;
+    const parents = this.numbered().filter((p) => p.numbering !== undefined && (p.numbering.tiered === true) !== on);
+    if (!parents.length) return;
+    doc.run('Numbering', () => {
+      for (const p of parents)
+        doc.set(p, 'numbering', on ? { format: p.numbering!.format, tiered: true } : { format: p.numbering!.format });
+    });
   }
 
   // -------------------------------------------------------------- topic style

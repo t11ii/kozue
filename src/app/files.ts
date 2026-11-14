@@ -1,7 +1,9 @@
 // Document lifecycle: new / open / save / export, session restore and
 // the list of recently used files.
 
-import type { DocData, MapStyle, NodeData, RelData } from '../core/model.ts';
+import type { FileData } from '../core/book.ts';
+import { Book } from '../core/book.ts';
+import type { MapStyle, NodeData, RelData } from '../core/model.ts';
 import { Doc, MNode } from '../core/model.ts';
 import { DEFAULT_THEME, themeById } from '../core/themes.ts';
 import { getLang, t } from '../i18n.ts';
@@ -76,7 +78,8 @@ const MAX_RECENT = 10;
 
 interface Draft {
   v: 1;
-  doc: DocData;
+  /** The whole file (the name of the field dates from when a file was a single map). */
+  doc: FileData;
   path?: string;
   name?: string;
   dirty: boolean;
@@ -113,6 +116,11 @@ function docFromData(data: { root: NodeData; theme?: string; layout?: string; re
   return Doc.fromData({ ...data, theme: theme.id }, theme.id, theme.palette.length);
 }
 
+/** A file from imported or remembered data: a single map, or several sheets. */
+function bookFromData(data: unknown): Book {
+  return Book.fromData(data, (sheet) => docFromData(sheet as Parameters<typeof docFromData>[0]));
+}
+
 export function blankDoc(): Doc {
   return new Doc(new MNode(t('central')), preferredTheme(), 'map');
 }
@@ -121,6 +129,7 @@ export function blankDoc(): Doc {
 export function welcomeDoc(): Doc {
   const ja = getLang() === 'ja';
   const mod = isMac ? '⌘' : 'Ctrl+';
+  const zen = isMac ? '⇧⌘F' : 'Ctrl+Shift+F';
   const n = (text: string, ...children: NodeData[]): NodeData => (children.length ? { text, children } : { text });
   const root: NodeData = ja
     ? n(
@@ -150,6 +159,7 @@ export function welcomeDoc(): Doc {
         n(
           'ファイル',
           n(`${mod}S で保存`),
+          n('1 つのファイルに複数のシート'),
           n('読み込み', n('Xmind'), n('Markdown・OPML'), n('FreeMind')),
           n('書き出し', n('PNG・SVG・PDF'), n('Markdown・Xmind')),
         ),
@@ -159,6 +169,7 @@ export function welcomeDoc(): Doc {
           n(`ピンチ・${mod}スクロールで拡大`),
           n(`${mod}F で検索・置換`),
           n(`${mod}1 で全体、${mod}; でブランチのみ`),
+          n(`${zen} で ZEN モード`),
         ),
         n('軽快', n('Canvas で描画'), n('数千トピックでも滑らか'), n('起動は一瞬')),
       )
@@ -195,6 +206,7 @@ export function welcomeDoc(): Doc {
         n(
           'Files',
           n(`${mod}S to save`),
+          n('Several sheets in one file'),
           n('Import', n('Xmind'), n('Markdown, OPML'), n('FreeMind')),
           n('Export', n('PNG, SVG, PDF'), n('Markdown, Xmind')),
         ),
@@ -204,6 +216,7 @@ export function welcomeDoc(): Doc {
           n(`Pinch or ${mod}scroll to zoom`),
           n(`${mod}F to find and replace`),
           n(`${mod}1 to fit, ${mod}; for one branch`),
+          n(`${zen} for ZEN mode`),
         ),
         n('Fast', n('Canvas rendering'), n('Smooth with thousands of topics'), n('Starts instantly')),
       );
@@ -247,24 +260,36 @@ export class Files {
   get displayName(): string {
     if (this.ref) return baseName(this.ref.name);
     if (this.importName) return this.importName;
-    const title = this.app.doc.root.text.split('\n')[0].trim();
+    // An unnamed file goes by the central topic of its first sheet.
+    const title = this.app.book.sheets[0].doc.root.text.split('\n')[0].trim();
     return title ? (title.length > 48 ? title.slice(0, 48) + '…' : title) : t('untitled');
+  }
+
+  /**
+   * Name for a file that holds the map on show: that of the file — and, when the
+   * file has several sheets, what the sheet goes by.
+   */
+  private get sheetName(): string {
+    const book = this.app.book;
+    if (book.sheets.length < 2) return this.displayName;
+    const sheet = book.active;
+    const words = fileWords(sheet.name || sheet.doc.root.text.split('\n')[0]) || String(book.indexOf() + 1);
+    return `${fileWords(this.displayName)} - ${words}`;
   }
 
   /** Nothing in this window is worth keeping. */
   get pristine(): boolean {
-    return !this.app.doc.dirty && this.ref === null && this.importName === null;
+    return !this.app.book.dirty && this.ref === null && this.importName === null;
   }
 
   // ------------------------------------------------------------ open / new
 
   private async load(file: OpenedFile): Promise<void> {
     const imp = await importFile(file.ref.name, file.bytes);
-    this.app.setDoc(docFromData(imp));
+    this.app.setBook(bookFromData(imp));
     this.ref = imp.native ? file.ref : null;
     this.importName = imp.native ? null : baseName(file.ref.name);
     if (imp.native && file.ref.path) this.addRecent(file.ref.path);
-    if (imp.sheets) this.ui.toast(t('otherSheets', { n: imp.sheets }));
     this.changed();
   }
 
@@ -328,7 +353,7 @@ export class Files {
   // ------------------------------------------------------------------ save
 
   private nativeBytes(): Uint8Array {
-    return new TextEncoder().encode(serializeNative(this.app.doc.toData()));
+    return new TextEncoder().encode(serializeNative(this.app.book.toData()));
   }
 
   async save(): Promise<boolean> {
@@ -340,7 +365,7 @@ export class Files {
       this.fail('saveFailed', e);
       return false;
     }
-    this.app.doc.markSaved();
+    this.app.book.markSaved();
     this.changed();
     return true;
   }
@@ -360,7 +385,7 @@ export class Files {
       this.fail('saveFailed', e);
       return false;
     }
-    this.app.doc.markSaved();
+    this.app.book.markSaved();
     this.changed();
     this.ui.toast(t('saved'));
     return true;
@@ -369,7 +394,7 @@ export class Files {
   /** Asks about unsaved changes. Resolves to true when it is fine to go on. */
   async confirmDiscard(): Promise<boolean> {
     this.app.editor.commit();
-    if (!this.app.doc.dirty) return true;
+    if (!this.app.book.dirty) return true;
     const answer = await this.ui.confirmUnsaved(this.displayName);
     if (answer === 'cancel') return false;
     if (answer === 'save') return this.save();
@@ -379,7 +404,7 @@ export class Files {
   /** Called before the window closes; false keeps it open. */
   async confirmClose(): Promise<boolean> {
     this.app.editor.commit();
-    if (this.app.doc.dirty) {
+    if (this.app.book.dirty) {
       const answer = await this.ui.confirmUnsaved(this.displayName);
       if (answer === 'cancel') return false;
       if (answer === 'save' && !(await this.save())) return false;
@@ -401,8 +426,9 @@ export class Files {
     const enc = new TextEncoder();
     try {
       if (!IMAGE_KINDS.includes(kind)) {
-        const ref = await pickSave(this.displayName, EXPORT_TYPES[kind], () =>
-          kind === 'xmind' ? toXmind(app.doc.toData(), APP_VERSION) : enc.encode(exportText(kind as TextFormat, app.doc.toData())),
+        const ref = await pickSave(kind === 'xmind' ? this.displayName : this.sheetName, EXPORT_TYPES[kind], () =>
+          // An Xmind file takes all sheets; the text formats describe the map on show.
+          kind === 'xmind' ? toXmind(app.book.toData(), APP_VERSION) : enc.encode(exportText(kind as TextFormat, app.doc.toData())),
         );
         if (ref) this.ui.toast(t('exported'));
         return;
@@ -442,7 +468,7 @@ export class Files {
         for (const main of root.children) {
           const words = fileWords(main.text) || String(++i);
           files.push({
-            name: `${fileWords(this.displayName)} - ${words}.${type.extensions[0]}`,
+            name: `${fileWords(this.sheetName)} - ${words}.${type.extensions[0]}`,
             data: await render(main),
             mime: type.mime,
           });
@@ -452,7 +478,7 @@ export class Files {
         return;
       }
       const target = opts.range === 'branch' ? branch : null;
-      const name = target ? `${this.displayName} - ${fileWords(target.text)}` : this.displayName;
+      const name = target ? `${this.sheetName} - ${fileWords(target.text)}` : this.sheetName;
       const ref = await pickSave(name, type, () => render(target));
       if (ref) this.ui.toast(reduced ? t('tooLarge') : t('exported'));
     } catch (e) {
@@ -502,13 +528,13 @@ export class Files {
 
   persistDraft(): void {
     clearTimeout(this.draftTimer);
-    const doc = this.app.doc;
+    const book = this.app.book;
     this.writeDraft({
       v: 1,
-      doc: doc.toData(),
+      doc: book.toData(),
       path: this.ref?.path,
       name: this.ref?.name ?? this.importName ?? undefined,
-      dirty: doc.dirty,
+      dirty: book.dirty,
     });
   }
 
@@ -543,12 +569,12 @@ export class Files {
               d.name = undefined;
             }
           }
-          const doc = docFromData(d.doc);
-          this.app.setDoc(doc);
+          const book = bookFromData(d.doc);
+          this.app.setBook(book);
           this.ref = d.path ? { name: d.name ?? baseName(d.path), path: d.path } : null;
           this.importName = d.path ? null : (d.name ?? null);
           if (d.dirty) {
-            doc.markDirty();
+            book.markDirty();
             if (isTauri) this.ui.toast(t('restored'));
           }
           this.changed();

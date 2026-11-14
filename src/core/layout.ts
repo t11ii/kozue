@@ -6,7 +6,7 @@
 // One pass is O(visible nodes); text is only re-measured for changed nodes.
 
 import type { Doc, LabelBox, LayoutKind, MNode } from './model.ts';
-import { countDescendants } from './model.ts';
+import { countDescendants, numberLabel } from './model.ts';
 import {
   A_AXIS_H,
   A_AXIS_V,
@@ -54,6 +54,7 @@ import {
   MARK,
   MARK_GAP,
   MARK_STEP,
+  NUM_GAP,
   ROUNDED,
   SUB_BOX_PAD_X,
   SUM_GAP,
@@ -165,12 +166,15 @@ function measureNode(n: MNode, c: Ctx): void {
     n.mEpoch = c.epoch;
   }
   n.mBox = n.box;
+  n.mNum = n.num;
   const marks = n.markers ? n.markers.length : 0;
   const mkW = marks ? marks * MARK_STEP - (MARK_STEP - MARK) + MARK_GAP : 0;
   const tdW = n.todo !== undefined ? TODO_STEP : 0;
+  // The topic's number among its siblings stands right in front of its text.
+  const numW = n.num ? Math.ceil(c.measurer.width(f, n.num)) + NUM_GAP : 0;
   const icons = (n.note ? 1 : 0) + (n.link ? 1 : 0);
   tw = fixed ?? Math.max(Math.ceil(tw), lv === 0 ? 48 : 18);
-  const rowW = tdW + mkW + tw + icons * ICON_STEP;
+  const rowW = tdW + mkW + numW + tw + icons * ICON_STEP;
   const rowH = Math.max(th, marks || tdW ? MARK : 0);
 
   // Label chips go under the text, wrapping when they would get wider than it.
@@ -245,7 +249,8 @@ function measureNode(n: MNode, c: Ctx): void {
   n.th = th;
   n.w = cw + padX * 2;
   n.h = ch + padY * 2;
-  n.tx = padX + tdW + mkW;
+  n.nw = numW;
+  n.tx = padX + tdW + mkW + numW;
   n.ty = padY + (rowH - th) / 2;
   n.rad = rad;
   // In a round outline, and in a box wider than its text, the lines sit in the middle.
@@ -296,7 +301,7 @@ function prepare(n: MNode, depth: number, rdepth: number, kind: LayoutKind, dir:
   n.fresh = n.stamp !== c.stamp - 1;
   n.stamp = c.stamp;
   const editing = c.editing !== null && c.editing.node === n;
-  if (editing || n.mVer !== n.ver || n.mLv !== lv || n.mEpoch !== c.epoch || n.mBox !== n.box) measureNode(n, c);
+  if (editing || n.mVer !== n.ver || n.mLv !== lv || n.mEpoch !== c.epoch || n.mBox !== n.box || n.mNum !== n.num) measureNode(n, c);
   c.count++;
   if ((isRow(dir) || isRow(n.cdir)) && n.h > (c.levelH[depth] ?? 0)) c.levelH[depth] = n.h;
   if (n.folded) {
@@ -307,9 +312,13 @@ function prepare(n: MNode, depth: number, rdepth: number, kind: LayoutKind, dir:
   const kids = n.children;
   const palette = c.theme.palette;
   const sums = summarizes(n.cdir);
+  const numbering = n.numbering;
+  let numbered = 0;
   let run = 0; // ordinary topics since the last summary
   for (let i = 0; i < kids.length; i++) {
     const k = kids[i];
+    // Summary topics stand beside their siblings and are not counted among them.
+    k.num = numbering && k.sum === undefined ? numberLabel(++numbered, numbering, n.num) : '';
     let kb = branch;
     if (k.color !== undefined) kb = resolveColor(c.theme, k.color);
     else if (depth === 0) kb = palette[i % palette.length];
@@ -730,9 +739,14 @@ export function layoutDoc(doc: Doc, o: LayoutOpts, from: MNode = doc.root): Layo
   let dir = 0;
   let index = 0;
   let branch = o.theme.root.fill;
+  let num = '';
   for (let i = 1; i < path.length; i++) {
     const q = path[i - 1];
     const n = path[i];
+    if (q.numbering && n.sum === undefined) {
+      const before = q.children.slice(0, q.children.indexOf(n)).filter((k) => k.sum === undefined).length;
+      num = numberLabel(before + 1, q.numbering, num);
+    } else num = '';
     if (q.structure !== undefined && q.parent) {
       kind = q.structure;
       rdepth = 0;
@@ -746,6 +760,7 @@ export function layoutDoc(doc: Doc, o: LayoutOpts, from: MNode = doc.root): Layo
   }
   from.sumN = 0;
   from.cover = null;
+  from.num = num;
   prepare(from, path.length - 1, rdepth, kind, dir, index, branch, c);
   arrange(from, c);
   if (isRibs(from.cdir) && isSpine(from.dir)) {

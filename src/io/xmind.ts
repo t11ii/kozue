@@ -2,20 +2,42 @@
 // Modern files are ZIP archives with a `content.json`; Xmind 8 and older
 // use `content.xml`. Both are read; export writes the modern format.
 
-import type { DocData, LayoutKind, MapStyle, NodeData, RelData, Shape, TopicStyle } from '../core/model.ts';
+import type { FileData, SheetData } from '../core/book.ts';
+import { cleanSheetName, isBookData } from '../core/book.ts';
+import type { LayoutKind, MapStyle, NodeData, NumberFormat, Numbering, RelData, Shape, TopicStyle } from '../core/model.ts';
 import { cleanStyle, cleanWidth } from '../core/model.ts';
 import type { XmlEl } from './xml.ts';
 import { childOf, childrenOf, findEl, parseXml } from './xml.ts';
 import { unzip, zip } from './zip.ts';
 
-export interface XmindImport {
+export interface XmindSheet {
+  /** The title of the sheet, when it says more than a default ("Sheet 1") or the central topic does. */
+  name?: string;
   root: NodeData;
   layout: LayoutKind;
   relationships?: RelData[];
   /** The sheet's own background. */
   style?: MapStyle;
-  /** Number of sheets in the file (only the first is imported). */
-  sheets: number;
+}
+
+/** The first sheet (all there is in most files), and the list of all sheets. */
+export interface XmindImport extends XmindSheet {
+  sheets: XmindSheet[];
+}
+
+/** Titles that Xmind (and Kozue) give a sheet when the user does not. */
+const DEFAULT_TITLE = /^(sheet|map|canvas|シート|マップ|画布|工作表)\s*\d*$/i;
+
+/** A sheet title as a sheet name: nothing for default titles and for a mere copy of the central topic. */
+function sheetName(title: unknown, root: NodeData): string | undefined {
+  const name = cleanSheetName(title);
+  if (!name || DEFAULT_TITLE.test(name) || name === cleanSheetName(root.text.split('\n')[0])) return undefined;
+  return name;
+}
+
+function importOf(sheets: XmindSheet[]): XmindImport {
+  if (!sheets.length) throw new Error('The Xmind file has no sheets');
+  return { ...sheets[0], sheets };
 }
 
 const IN_MARKERS: Record<string, string> = {
@@ -234,6 +256,31 @@ function styleTo(st: TopicStyle): Json {
   return p;
 }
 
+/** Xmind's names for the ways of numbering subtopics. (It has a single kind of Roman numerals.) */
+const NUMBER_CLASSES: Record<NumberFormat, string> = {
+  arabic: 'org.xmind.numbering.arabic',
+  upper: 'org.xmind.numbering.uppercase',
+  lower: 'org.xmind.numbering.lowercase',
+  roman: 'org.xmind.numbering.roman',
+  'roman-lower': 'org.xmind.numbering.roman',
+};
+
+/** The numbering a topic gives its subtopics: `format` and `tiered` as Xmind writes them in either file form. */
+function numberingFrom(format: unknown, tiered: unknown): Numbering | undefined {
+  const f = typeof format === 'string' ? format.toLowerCase() : '';
+  const kind: NumberFormat | undefined = f.endsWith('.arabic')
+    ? 'arabic'
+    : f.endsWith('.uppercase')
+      ? 'upper'
+      : f.endsWith('.lowercase')
+        ? 'lower'
+        : f.endsWith('.roman')
+          ? 'roman'
+          : undefined;
+  if (!kind) return undefined;
+  return tiered === true || tiered === 'true' ? { format: kind, tiered: true } : { format: kind };
+}
+
 /** The background a sheet was given, if it is a plain color. */
 function mapStyleFrom(props: Json): MapStyle | undefined {
   const bg = colorOf(props['svg:fill']);
@@ -266,6 +313,8 @@ function fromJsonTopic(raw: unknown, ends: ReadonlySet<string>, isRoot = false):
   if (style) n.style = style;
   const width = cleanWidth(t.customWidth);
   if (width !== undefined) n.width = width;
+  const numbering = numberingFrom(obj(t.numbering).numberFormat, obj(t.numbering).prependingNumbers);
+  if (numbering) n.numbering = numbering;
   const children = obj(t.children);
   const kids = arr(children.attached);
   if (kids.length) {
@@ -286,14 +335,13 @@ function fromJsonTopic(raw: unknown, ends: ReadonlySet<string>, isRoot = false):
   return n;
 }
 
-function fromJson(text: string): XmindImport {
-  const sheets = arr(JSON.parse(text));
-  const sheet = obj(sheets[0]);
+function sheetFromJson(raw: unknown): XmindSheet | null {
+  const sheet = obj(raw);
   const rt = obj(sheet.rootTopic);
-  if (!sheets.length || !sheet.rootTopic) throw new Error('The Xmind file has no sheets');
+  if (!sheet.rootTopic) return null;
   const relationships: RelData[] = [];
-  for (const raw of arr(sheet.relationships)) {
-    const r = obj(raw);
+  for (const rawRel of arr(sheet.relationships)) {
+    const r = obj(rawRel);
     if (typeof r.end1Id !== 'string' || typeof r.end2Id !== 'string') continue;
     const title = cleanTitle(r.title).replace(/\s+/g, ' ').trim();
     relationships.push(title ? { from: r.end1Id, to: r.end2Id, text: title } : { from: r.end1Id, to: r.end2Id });
@@ -326,7 +374,17 @@ function fromJson(text: string): XmindImport {
     }
   }
   const style = mapStyleFrom(obj(obj(sheet.style).properties));
-  return { root, layout, sheets: sheets.length, ...(relationships.length ? { relationships } : {}), ...(style ? { style } : {}) };
+  const name = sheetName(sheet.title, root);
+  return { ...(name ? { name } : {}), root, layout, ...(relationships.length ? { relationships } : {}), ...(style ? { style } : {}) };
+}
+
+function fromJson(text: string): XmindImport {
+  const sheets: XmindSheet[] = [];
+  for (const raw of arr(JSON.parse(text))) {
+    const sheet = sheetFromJson(raw);
+    if (sheet) sheets.push(sheet);
+  }
+  return importOf(sheets);
 }
 
 // ------------------------------------------------------------- content.xml
@@ -360,6 +418,9 @@ function fromXmlTopic(el: XmlEl, ends: ReadonlySet<string>, styles: XmlStyles, i
   if (style) n.style = style;
   const width = el.attrs['svg:width'] ? cleanWidth(parseFloat(el.attrs['svg:width'])) : undefined;
   if (width !== undefined) n.width = width;
+  const numberingEl = childOf(el, 'numbering');
+  const numbering = numberingEl ? numberingFrom(numberingEl.attrs['number-format'], numberingEl.attrs['prepending-numbers']) : undefined;
+  if (numbering) n.numbering = numbering;
   const note = childOf(childOf(el, 'notes'), 'plain')?.text.trim();
   if (note) n.note = note.replace(/\r\n?/g, '\n');
   const link = webLink(el.attrs['xlink:href']);
@@ -410,29 +471,32 @@ function fromXmlTopic(el: XmlEl, ends: ReadonlySet<string>, styles: XmlStyles, i
 
 function fromXml(text: string, stylesText?: string): XmindImport {
   const styles = readXmlStyles(stylesText);
-  const doc = parseXml(text);
-  const content = findEl(doc, 'xmap-content');
-  const sheets = childrenOf(content, 'sheet');
-  const topic = childOf(sheets[0], 'topic');
-  if (!topic) throw new Error('The Xmind file has no sheets');
-  const relationships: RelData[] = [];
-  for (const r of childrenOf(childOf(sheets[0], 'relationships'), 'relationship')) {
-    if (!r.attrs.end1 || !r.attrs.end2) continue;
-    const title = cleanTitle(childOf(r, 'title')?.text).replace(/\s+/g, ' ').trim();
-    relationships.push(title ? { from: r.attrs.end1, to: r.attrs.end2, text: title } : { from: r.attrs.end1, to: r.attrs.end2 });
+  const content = findEl(parseXml(text), 'xmap-content');
+  const sheets: XmindSheet[] = [];
+  for (const sheet of childrenOf(content, 'sheet')) {
+    const topic = childOf(sheet, 'topic');
+    if (!topic) continue;
+    const relationships: RelData[] = [];
+    for (const r of childrenOf(childOf(sheet, 'relationships'), 'relationship')) {
+      if (!r.attrs.end1 || !r.attrs.end2) continue;
+      const title = cleanTitle(childOf(r, 'title')?.text).replace(/\s+/g, ' ').trim();
+      relationships.push(title ? { from: r.attrs.end1, to: r.attrs.end2, text: title } : { from: r.attrs.end1, to: r.attrs.end2 });
+    }
+    const ends = new Set(relationships.flatMap((r) => [r.from, r.to]));
+    const root = fromXmlTopic(topic, ends, styles, true);
+    delete root.collapsed;
+    const sheetProps = sheet.attrs['style-id'] ? styles.get(sheet.attrs['style-id']) : undefined;
+    const style = sheetProps ? mapStyleFrom(sheetProps) : undefined;
+    const name = sheetName(childOf(sheet, 'title')?.text, root);
+    sheets.push({
+      ...(name ? { name } : {}),
+      root,
+      layout: layoutOf(topic.attrs['structure-class']),
+      ...(relationships.length ? { relationships } : {}),
+      ...(style ? { style } : {}),
+    });
   }
-  const ends = new Set(relationships.flatMap((r) => [r.from, r.to]));
-  const root = fromXmlTopic(topic, ends, styles, true);
-  delete root.collapsed;
-  const sheetProps = sheets[0].attrs['style-id'] ? styles.get(sheets[0].attrs['style-id']) : undefined;
-  const style = sheetProps ? mapStyleFrom(sheetProps) : undefined;
-  return {
-    root,
-    layout: layoutOf(topic.attrs['structure-class']),
-    sheets: sheets.length,
-    ...(relationships.length ? { relationships } : {}),
-    ...(style ? { style } : {}),
-  };
+  return importOf(sheets);
 }
 
 export async function parseXmind(bytes: Uint8Array): Promise<XmindImport> {
@@ -470,6 +534,7 @@ function toJsonTopic(n: NodeData, ids: Map<string, string>): Json {
   if (n.structure !== undefined) t.structureClass = STRUCTURES[n.structure];
   if (n.style) t.style = { id: newId(), properties: styleTo(n.style) };
   if (n.width !== undefined) t.customWidth = n.width;
+  if (n.numbering) t.numbering = { numberFormat: NUMBER_CLASSES[n.numbering.format], prependingNumbers: n.numbering.tiered === true };
   if (n.children?.length) {
     // Xmind keeps summary topics apart from the ordinary children and frames by ranges of those.
     const attached: Json[] = [];
@@ -517,7 +582,8 @@ const STRUCTURES: Record<LayoutKind, string> = {
   'fishbone-right': 'org.xmind.ui.fishbone.rightHeaded',
 };
 
-export async function toXmind(doc: DocData, appVersion: string): Promise<Uint8Array> {
+/** One sheet in Xmind's form. `fallback` titles a sheet that has neither a name nor a central topic text. */
+function toJsonSheet(doc: SheetData, fallback: string): Json {
   let root = doc.root;
   let rightCount = 0;
   if (doc.layout === 'map' && root.children) {
@@ -540,7 +606,7 @@ export async function toXmind(doc: DocData, appVersion: string): Promise<Uint8Ar
   if (doc.layout === 'map') {
     rootTopic.extensions = [{ provider: 'org.xmind.ui.map.unbalanced', content: [{ name: 'right-number', content: String(rightCount) }] }];
   }
-  const title = root.text.split('\n')[0] || 'Sheet 1';
+  const title = doc.name || root.text.split('\n')[0] || fallback;
   const sheet: Json = { id: newId(), class: 'sheet', title, rootTopic, topicPositioning: 'fixed' };
   const relationships: Json[] = [];
   for (const r of doc.relationships ?? []) {
@@ -551,7 +617,13 @@ export async function toXmind(doc: DocData, appVersion: string): Promise<Uint8Ar
   }
   if (relationships.length) sheet.relationships = relationships;
   if (doc.style?.background) sheet.style = { id: newId(), properties: { 'svg:fill': doc.style.background } };
-  const content = [sheet];
+  return sheet;
+}
+
+/** Writes a document, or all sheets of a file, as an Xmind workbook. */
+export async function toXmind(data: FileData, appVersion: string): Promise<Uint8Array> {
+  const sheets: SheetData[] = isBookData(data) ? data.sheets : [data];
+  const content = sheets.map((sheet, i) => toJsonSheet(sheet, `Sheet ${i + 1}`));
   const enc = new TextEncoder();
   return zip([
     { name: 'content.json', data: enc.encode(JSON.stringify(content)) },
