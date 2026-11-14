@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Kozue</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage">
+        <canvas id="canvas"></canvas>
+        <textarea
+          id="editor"
+          class="idle"
+          rows="1"
+          spellcheck="false"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          aria-label="Topic text"
+        ></textarea>
+        <div id="mirror" aria-hidden="true"></div>
+      </div>
+      <header id="toolbar" data-tauri-drag-region></header>
+      <aside id="panel"></aside>
+      <div id="overlays"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
