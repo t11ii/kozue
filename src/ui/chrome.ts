@@ -6,6 +6,7 @@ import type { ExportKind, Files } from '../app/files.ts';
 import type { Sheet } from '../core/book.ts';
 import { MAX_SHEET_NAME } from '../core/book.ts';
 import type { MNode } from '../core/model.ts';
+import { isTopicLink } from '../core/model.ts';
 import { BRANCH_KINDS, LAYOUT_KINDS } from '../core/structures.ts';
 import type { MsgKey } from '../i18n.ts';
 import { t } from '../i18n.ts';
@@ -40,6 +41,12 @@ export class Chrome {
   private modeEl!: HTMLElement;
   private sheetsEl!: HTMLElement;
   private zenExit!: HTMLElement;
+  private hud!: HTMLElement;
+  private hudLabel!: HTMLElement;
+  /** A presentation is showing: the chrome is out of the way for it. */
+  private presenting = false;
+  private zenBefore = false;
+  private hudTimer = 0;
   /** ZEN mode: nothing but the map, on the whole screen. */
   zen = false;
   private panelWasOpen = false;
@@ -74,6 +81,10 @@ export class Chrome {
     document.addEventListener('fullscreenchange', () => {
       if (!isTauri && this.zen && !document.fullscreenElement) this.toggleZen(false);
     });
+    // The controls of a presentation come up whenever the pointer moves.
+    window.addEventListener('pointermove', () => {
+      if (this.presenting) this.wakeHud();
+    });
   }
 
   /** Rebuilds all chrome (after a language change). */
@@ -107,6 +118,21 @@ export class Chrome {
     keepFocus(this.zenExit);
     this.zenExit.addEventListener('click', () => this.toggleZen(false));
     this.float(this.zenExit);
+    // Presentation: where it stands, and buttons for those who do not use the keys.
+    this.hudLabel = h('span', { class: 'hud-label' });
+    const end = h('button', { class: 'hud-end' }, t('presentEnd'), h('span', { class: 'zen-key' }, 'Esc'));
+    keepFocus(end);
+    end.addEventListener('click', () => this.app.endPresentation());
+    this.hud = h(
+      'div',
+      { class: 'present-hud' },
+      this.button(icons.chevronLeft, `${t('prev')}  ←`, () => this.app.stepPresentation(-1), 'tip-up'),
+      this.hudLabel,
+      this.button(icons.chevronRight, `${t('next')}  →`, () => this.app.stepPresentation(1), 'tip-up'),
+      h('div', { class: 'tb-sep' }),
+      end,
+    );
+    this.float(this.hud);
     this.sheetsShown = '';
     this.renaming = false;
     this.syncDoc();
@@ -144,6 +170,7 @@ export class Chrome {
     const rel = this.button(icons.relationship, tip('relationship', 'mod+shift+l'), 'relationship');
     const boundary = this.button(icons.boundary, tip('boundary', 'mod+shift+b'), 'boundary');
     const summary = this.button(icons.summary, t('summary'), 'summary');
+    const present = this.button(icons.present, tip('present', 'mod+shift+p'), 'present');
     const search = this.button(icons.search, tip('search', 'mod+f'), 'search');
     this.panelBtn = this.button(icons.format, tip('format', 'mod+i'), 'togglePanel', 'tip-end');
 
@@ -167,7 +194,7 @@ export class Chrome {
         summary,
       ),
       h('div', { class: 'tb-title', 'data-tauri-drag-region': true }, this.nameEl, this.dotEl),
-      h('div', { class: 'tb-group right', 'data-tauri-drag-region': true }, search, this.panelBtn),
+      h('div', { class: 'tb-group right', 'data-tauri-drag-region': true }, present, search, this.panelBtn),
     );
   }
 
@@ -307,6 +334,7 @@ export class Chrome {
   /** Pills that say which special state the canvas is in, each with a way out. */
   private syncModes(): void {
     const app = this.app;
+    this.syncPresentation();
     const bar = this.modeEl;
     clear(bar);
     const pill = (icon: string, text: string, exit: MsgKey, run: () => void): void => {
@@ -316,8 +344,48 @@ export class Chrome {
       bar.append(h('div', { class: 'mode-pill' }, h('span', { class: 'mode-icon', html: icon }), h('span', null, text), x));
     };
     if (app.connect) pill(icons.relationship, t('connectHint'), 'cancel', () => app.cancelConnect());
+    if (app.linking) pill(icons.jump, t('linkHint'), 'cancel', () => app.cancelTopicLink());
     if (app.focus) pill(icons.focus, t('focusOn'), 'showAll', () => app.setFocus(null));
     if (app.filter) pill(icons.filter, t('filterOn', { n: app.filterCount }), 'clearFilter', () => app.setFilter(null));
+  }
+
+  // ------------------------------------------------------------ presentation
+
+  /** Follows the presentation: clears the screen for it, shows where it stands, and tidies up after it. */
+  private syncPresentation(): void {
+    const app = this.app;
+    const p = app.present;
+    if (p && !this.presenting) {
+      this.presenting = true;
+      this.zenBefore = this.zen;
+      document.documentElement.classList.add('presenting');
+      this.toggleZen(true);
+      // The chrome is gone and the map has more room: frame the first step again.
+      app.framePresentation();
+    } else if (!p && this.presenting) {
+      this.presenting = false;
+      clearTimeout(this.hudTimer);
+      document.documentElement.classList.remove('presenting', 'hud-idle');
+      if (!this.zenBefore) this.toggleZen(false);
+    }
+    if (!p) return;
+    const node = p.steps[p.index];
+    const title = node.text.split('\n')[0].trim();
+    const name = p.index === 0 ? t('presentWhole') : title.length > 28 ? title.slice(0, 27) + '…' : title;
+    this.hudLabel.textContent = `${p.index + 1} / ${p.steps.length}　${name}`;
+    this.wakeHud();
+  }
+
+  /** Shows the controls of the presentation for a moment. With them goes the pointer: only the map is left to look at. */
+  private wakeHud(): void {
+    const root = document.documentElement;
+    this.hud.classList.add('show');
+    root.classList.remove('hud-idle');
+    clearTimeout(this.hudTimer);
+    this.hudTimer = window.setTimeout(() => {
+      this.hud.classList.remove('show');
+      root.classList.add('hud-idle');
+    }, 2400);
   }
 
   // --------------------------------------------------------------------- zen
@@ -343,6 +411,8 @@ export class Chrome {
       this.zenExit.classList.remove('show');
       app.insets.top = 56;
       if (this.panelWasOpen) this.panel.toggle(true, false);
+      // Leaving the full screen (a browser does on Escape) ends a presentation with it.
+      if (app.present) app.endPresentation();
     }
     void setFullscreen(on);
     app.emit('view');
@@ -539,8 +609,9 @@ export class Chrome {
 
   /** A note / link indicator on the canvas was clicked. */
   indicator(node: MNode, part: 'note' | 'link', x: number, y: number): void {
-    if (part === 'link' && node.link) openExternal(node.link);
-    else if (part === 'note') this.showNote(node, x, y);
+    if (part === 'link' && node.link) {
+      if (!this.app.followLink(node)) openExternal(node.link);
+    } else if (part === 'note') this.showNote(node, x, y);
   }
 
   // ------------------------------------------------------------------- menus
@@ -555,6 +626,7 @@ export class Chrome {
     const recent = files.recent;
     const items: (MenuItem | false)[] = [
       this.item('new', 'new', 'mod+n'),
+      this.item('newFromTemplate', 'newFromTemplate'),
       isTauri && this.item('newWindow', 'newWindow', 'mod+shift+n'),
       this.item('open', 'open', 'mod+o'),
       isTauri && {
@@ -614,6 +686,7 @@ export class Chrome {
       this.item('expandAll', 'expandAll'),
       this.item('collapseAll', 'collapseAll'),
       this.item('zen', 'zen', 'mod+shift+f'),
+      this.item('present', 'present', 'mod+shift+p'),
       SEP,
       this.item('findReplace', 'replace', isMac ? 'mod+alt+f' : 'mod+h'),
       this.item('shortcuts', 'shortcuts'),
@@ -674,6 +747,8 @@ export class Chrome {
         this.item('edit', 'edit', 'space', { disabled: !single }),
         this.item('editNote', 'editNote', undefined, { disabled: !single }),
         this.item('editLink', 'editLink', 'mod+k', { disabled: !single }),
+        this.item('topicLink', 'topicLink'),
+        ...(single && isTopicLink(node.link) ? [{ label: t('linkGoMenu'), action: () => void app.followLink(node) }] : []),
         this.item(node.collapsed ? 'expand' : 'collapse', 'toggleCollapse', 'mod+/', { disabled: !foldable }),
         this.item(app.focus === node ? 'showAll' : 'focusBranch', 'focusBranch', 'mod+;', { disabled: isRoot || !single }),
         this.item('sheetFromTopic', 'sheet.fromTopic', undefined, { disabled: isRoot || !single }),

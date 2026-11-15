@@ -107,7 +107,11 @@ test('map settings drop what says nothing new', () => {
     line: 1.61,
     font: 'serif',
   });
-  assert.deepEqual(cleanMapStyle({ background: 'white', line: 1, font: 'sans' }), {});
+  assert.deepEqual(
+    cleanMapStyle({ background: 'white', line: 1, font: 'sans' }),
+    { font: 'sans' },
+    'a theme may come with another typeface',
+  );
   assert.deepEqual(cleanMapStyle({ line: 99, font: 'comic' }), { line: 3 });
   assert.deepEqual(cleanMapStyle({ line: 0 }), { line: 0.4 });
   assert.deepEqual(cleanMapStyle(undefined), {});

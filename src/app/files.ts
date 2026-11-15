@@ -5,11 +5,14 @@ import type { FileData } from '../core/book.ts';
 import { Book } from '../core/book.ts';
 import type { MapStyle, NodeData, RelData } from '../core/model.ts';
 import { Doc, MNode } from '../core/model.ts';
+import type { Theme } from '../core/themes.ts';
 import { DEFAULT_THEME, themeById } from '../core/themes.ts';
 import { getLang, t } from '../i18n.ts';
 import type { TextFormat } from '../io/formats.ts';
 import { NATIVE_EXT, OPEN_EXTENSIONS, baseName, exportText, importFile, serializeNative } from '../io/formats.ts';
 import { toXmind } from '../io/xmind.ts';
+import type { Template } from './templates.ts';
+import { templates } from './templates.ts';
 import type { FileRef, FileType, NamedFile, OpenedFile } from '../platform.ts';
 import {
   canWriteBack,
@@ -45,6 +48,8 @@ export interface ExportOptions {
 export interface FilesUi {
   toast(message: string, kind?: 'info' | 'error'): void;
   confirmUnsaved(name: string): Promise<'save' | 'discard' | 'cancel'>;
+  /** Lets the user choose a template (drawn in `theme`); resolves to null when cancelled. */
+  pickTemplate(list: readonly Template[], theme: Theme): Promise<Template | null>;
   /** Asks how to export an image; resolves to null when cancelled. */
   exportOptions(kind: ImageKind, choice: { branch: boolean; split: boolean; preferBranch: boolean }): Promise<ExportOptions | null>;
 }
@@ -130,16 +135,23 @@ export function welcomeDoc(): Doc {
   const ja = getLang() === 'ja';
   const mod = isMac ? '⌘' : 'Ctrl+';
   const zen = isMac ? '⇧⌘F' : 'Ctrl+Shift+F';
+  const present = isMac ? '⇧⌘P' : 'Ctrl+Shift+P';
   const n = (text: string, ...children: NodeData[]): NodeData => (children.length ? { text, children } : { text });
   const root: NodeData = ja
     ? n(
         'Kozue',
-        n('はじめに', n('Tab でサブトピック'), n('Enter で次のトピック'), n('Space・ダブルクリックで編集'), n('ドラッグで付け替え')),
+        {
+          text: 'はじめに',
+          id: 'start',
+          children: [n('Tab でサブトピック'), n('Enter で次のトピック'), n('Space・ダブルクリックで編集'), n('ドラッグで付け替え')],
+        },
         n(
           '書き込む',
           { text: 'マーカー', markers: ['p1', 'done'] },
-          { text: 'ノート', note: 'トピックごとにメモを残せます。\nアイコンをクリックすると表示されます。', id: 'note' },
           { text: 'リンク', link: 'https://www.wikipedia.org/' },
+          { text: 'トピックへのリンク', link: '#start' },
+          // (Last, next to the topic that the relationship comes from: its line crosses nothing.)
+          { text: 'ノート', note: 'トピックごとにメモを残せます。\nアイコンをクリックすると表示されます。', id: 'note' },
         ),
         n(
           '整理する',
@@ -151,7 +163,7 @@ export function welcomeDoc(): Doc {
         ),
         n(
           '見た目',
-          n('6 つのテーマ'),
+          n('18 のテーマ'),
           n('12 の構造', n('マインドマップ・ロジック'), n('組織図・ツリー'), n('タイムライン・フィッシュボーン')),
           n('ブランチごとの色と構造'),
           { text: '形・色・文字のスタイル', style: { shape: 'pill', fill: '#ffe08a' } },
@@ -162,6 +174,7 @@ export function welcomeDoc(): Doc {
           n('1 つのファイルに複数のシート'),
           n('読み込み', n('Xmind'), n('Markdown・OPML'), n('FreeMind')),
           n('書き出し', n('PNG・SVG・PDF'), n('Markdown・Xmind')),
+          n('テンプレートから新規'),
         ),
         n(
           '表示',
@@ -170,23 +183,23 @@ export function welcomeDoc(): Doc {
           n(`${mod}F で検索・置換`),
           n(`${mod}1 で全体、${mod}; でブランチのみ`),
           n(`${zen} で ZEN モード`),
+          n(`${present} でプレゼンテーション`),
         ),
         n('軽快', n('Canvas で描画'), n('数千トピックでも滑らか'), n('起動は一瞬')),
       )
     : n(
         'Kozue',
-        n(
-          'Getting started',
-          n('Tab adds a subtopic'),
-          n('Enter adds the next topic'),
-          n('Space or double-click to edit'),
-          n('Drag to rearrange'),
-        ),
+        {
+          text: 'Getting started',
+          id: 'start',
+          children: [n('Tab adds a subtopic'), n('Enter adds the next topic'), n('Space or double-click to edit'), n('Drag to rearrange')],
+        },
         n(
           'Annotate',
           { text: 'Markers', markers: ['p1', 'done'] },
-          { text: 'Notes', note: 'Every topic can carry a note.\nClick the icon to read it.', id: 'note' },
           { text: 'Links', link: 'https://www.wikipedia.org/' },
+          { text: 'Links to topics', link: '#start' },
+          { text: 'Notes', note: 'Every topic can carry a note.\nClick the icon to read it.', id: 'note' },
         ),
         n(
           'Organize',
@@ -198,7 +211,7 @@ export function welcomeDoc(): Doc {
         ),
         n(
           'Look',
-          n('6 themes'),
+          n('18 themes'),
           n('12 structures', n('Mind map, logic chart'), n('Org chart, tree'), n('Timeline, fishbone')),
           n('Colors and structures per branch'),
           { text: 'Shapes, colors and text styles', style: { shape: 'pill', fill: '#ffe08a' } },
@@ -209,6 +222,7 @@ export function welcomeDoc(): Doc {
           n('Several sheets in one file'),
           n('Import', n('Xmind'), n('Markdown, OPML'), n('FreeMind')),
           n('Export', n('PNG, SVG, PDF'), n('Markdown, Xmind')),
+          n('New from a template'),
         ),
         n(
           'View',
@@ -217,6 +231,7 @@ export function welcomeDoc(): Doc {
           n(`${mod}F to find and replace`),
           n(`${mod}1 to fit, ${mod}; for one branch`),
           n(`${zen} for ZEN mode`),
+          n(`${present} to present`),
         ),
         n('Fast', n('Canvas rendering'), n('Smooth with thousands of topics'), n('Starts instantly')),
       );
@@ -302,6 +317,14 @@ export class Files {
   async newDoc(): Promise<void> {
     if (!(await this.confirmDiscard())) return;
     this.setFresh(blankDoc());
+  }
+
+  /** A new map from one of the templates, in the theme used last. */
+  async newFromTemplate(): Promise<void> {
+    this.app.editor.commit();
+    const tpl = await this.ui.pickTemplate(templates(), themeById(preferredTheme()));
+    if (!tpl || !(await this.confirmDiscard())) return;
+    this.setFresh(docFromData({ root: tpl.root, layout: tpl.layout }));
   }
 
   async showWelcome(): Promise<void> {

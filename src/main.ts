@@ -48,6 +48,7 @@ chrome.notify = (message) => dialogs.toast(message);
 // ---------------------------------------------------------------- commands
 
 app.register('new', () => void files.newDoc());
+app.register('newFromTemplate', () => void files.newFromTemplate());
 app.register('newWindow', () => newWindow());
 app.register('open', () => void files.open());
 app.register('save', () => void files.save());

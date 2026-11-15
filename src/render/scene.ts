@@ -45,7 +45,7 @@ import {
   mix,
   nodeStyle,
 } from '../core/themes.ts';
-import { drawLinkIcon, drawMarker, drawNoteIcon } from './markers.ts';
+import { drawJumpIcon, drawLinkIcon, drawMarker, drawNoteIcon } from './markers.ts';
 import type { Painter } from './painter.ts';
 import { circle, diamond, ellipse, roundRect } from './painter.ts';
 
@@ -321,7 +321,7 @@ function ribEdge(p: Painter, q: MNode, n: MNode): void {
 }
 
 /** Radius of the corner where an elbow connector turns towards its topic. */
-const elbowR = (dy: number, dx: number): number => Math.min(8, Math.abs(dy), Math.abs(dx));
+const elbowR = (dy: number, dx: number, max = 8): number => Math.min(max, Math.abs(dy), Math.abs(dx));
 
 /** Mind map / logic chart: beside the parent. */
 function sideEdge(p: Painter, q: MNode, n: MNode, o: SceneOpts): void {
@@ -340,7 +340,7 @@ function sideEdge(p: Painter, q: MNode, n: MNode, o: SceneOpts): void {
       p.lineTo(x1, y1);
     } else {
       const s = dy > 0 ? 1 : -1;
-      const r = elbowR(dy, x1 - jx);
+      const r = elbowR(dy, x1 - jx, o.theme.corner);
       p.moveTo(jx, y1 - s * r);
       p.quadTo(jx, y1, jx + d * r, y1);
       p.lineTo(x1, y1);
@@ -350,24 +350,29 @@ function sideEdge(p: Painter, q: MNode, n: MNode, o: SceneOpts): void {
     // when it has no box that would hide where they meet.
     const cx = q.box ? q.ax + q.w / 2 : d > 0 ? q.ax + q.w : q.ax;
     const cy = q.box ? q.ay + q.h / 2 : attachY(q);
-    const kx = cx + (x1 - cx) * 0.36;
-    if (o.theme.taper && n.pk === 'map') taperPath(p, cx, cy, kx, y1, x1, y1, TAPER_FROM * ls, TAPER_TO * ls);
+    // Straight themes run a straight line; the others swing out and arrive level.
+    const straight = o.theme.edge === 'straight';
+    const kx = straight ? (cx + x1) / 2 : cx + (x1 - cx) * 0.36;
+    const ky = straight ? (cy + y1) / 2 : y1;
+    if (o.theme.taper && n.pk === 'map') taperPath(p, cx, cy, kx, ky, x1, y1, TAPER_FROM * ls, TAPER_TO * ls);
     else {
       p.moveTo(cx, cy);
-      p.quadTo(kx, y1, x1, y1);
+      if (straight) p.lineTo(x1, y1);
+      else p.quadTo(kx, ky, x1, y1);
     }
     return;
   } else {
     const x0 = d > 0 ? q.ax + q.w : q.ax;
     const y0 = attachY(q);
     p.moveTo(x0, y0);
-    if (o.theme.edge === 'elbow') {
+    if (o.theme.edge === 'straight') p.lineTo(x1, y1);
+    else if (o.theme.edge === 'elbow') {
       const jx = x0 + d * 16;
       const dy = y1 - y0;
       if (Math.abs(dy) < 0.5) p.lineTo(x1, y1);
       else {
         const s = dy > 0 ? 1 : -1;
-        const r = elbowR(dy, x1 - jx);
+        const r = elbowR(dy, x1 - jx, o.theme.corner);
         p.lineTo(jx, y0);
         p.lineTo(jx, y1 - s * r);
         p.quadTo(jx, y1, jx + d * r, y1);
@@ -628,7 +633,7 @@ function drawStem(p: Painter, q: MNode, o: SceneOpts): void {
     const y1 = attachY(k);
     const dy = y1 - y0;
     if (Math.abs(dy) < 0.5) continue;
-    const r = elbowR(dy, (d > 0 ? k.ax : k.ax + k.w) - jx);
+    const r = elbowR(dy, (d > 0 ? k.ax : k.ax + k.w) - jx, o.theme.corner);
     if (dy < 0) top = Math.min(top, y1 + r);
     else bottom = Math.max(bottom, y1 - r);
   }
@@ -925,7 +930,8 @@ function drawDecor(p: Painter, n: MNode, o: SceneOpts): void {
         drawNoteIcon(p, ix, iy, ICON, st.text, a * 0.6);
         ix += ICON_STEP;
       }
-      if (n.link) drawLinkIcon(p, ix, iy, ICON, st.text, a * 0.6);
+      // A link to another topic shows another sign than one to the web.
+      if (n.link) (n.link.charAt(0) === '#' ? drawJumpIcon : drawLinkIcon)(p, ix, iy, ICON, st.text, a * 0.6);
     }
     if (n.lab.length && o.zoom * LABEL_FONT.size >= LOD_PX) {
       // On a colored box the chips have to be a little stronger to show.

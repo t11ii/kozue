@@ -561,24 +561,36 @@ export class Doc {
 
   // ---------------------------------------------------------- serialization
 
-  toData(): DocData {
+  /**
+   * @param linked the ids that topic links point at, anywhere in the file. When given,
+   *   a topic that no link points at is written without the id it has for that.
+   */
+  toData(linked?: ReadonlySet<string>): DocData {
     const rels = this.rels.filter((r) => isAttached(r.from, this.root) && isAttached(r.to, this.root));
-    // Only the topics a relationship points at carry an id in the file.
+    // A topic carries an id in the file when a relationship ends at it or a topic link points at it.
     const ends = new Set<MNode>();
     for (const r of rels) ends.add(r.from).add(r.to);
-    if (ends.size) {
-      const used = new Set<string>();
-      walk(this.root, (n) => {
-        if (n.ref !== undefined && ends.has(n) && !used.has(n.ref)) used.add(n.ref);
-        else if (n.ref !== undefined) n.ref = undefined;
-      });
-      let seq = 1;
-      for (const n of ends) {
-        if (n.ref !== undefined) continue;
-        while (used.has('t' + seq)) seq++;
-        n.ref = 't' + seq;
-        used.add(n.ref);
+    const named = new Set<MNode>(ends);
+    const used = new Set<string>();
+    walk(this.root, (n) => {
+      const ref = n.ref;
+      if (ref === undefined) return;
+      if (used.has(ref) || (REL_REF.test(ref) && !ends.has(n) && !linked?.has(ref))) {
+        // A second topic with the same id, or an id that only named the end of a relationship that is gone.
+        n.ref = undefined;
+        return;
       }
+      used.add(ref);
+      // An id for links stays with its topic even while nothing points at it:
+      // undo may bring such a link back. It is just not written then.
+      if (linked === undefined || linked.has(ref)) named.add(n);
+    });
+    let seq = 1;
+    for (const n of ends) {
+      if (n.ref !== undefined) continue;
+      while (used.has('t' + seq)) seq++;
+      n.ref = 't' + seq;
+      used.add(n.ref);
     }
     const data: DocData = {
       format: 'kozue',
@@ -586,7 +598,7 @@ export class Doc {
       theme: this.theme,
       layout: this.layout,
       ...(Object.keys(this.style).length ? { style: { ...this.style } } : {}),
-      root: toData(this.root, ends),
+      root: toData(this.root, named),
     };
     if (rels.length) {
       data.relationships = rels.map((r) => {
@@ -660,6 +672,36 @@ export function toData(n: MNode, ids?: ReadonlySet<MNode>): NodeData {
 
 const HEX = /^#[0-9a-f]{6}$/i;
 const ID = /^[\w-]{1,48}$/;
+/** Ids that only name the ends of relationships within one map ("t1", "t2" …). */
+const REL_REF = /^t\d+$/;
+
+/** True for a link that points at another topic of the file ("#" and that topic's id) rather than at the web. */
+export const isTopicLink = (link: string | undefined): link is string =>
+  link !== undefined && link.charAt(0) === '#' && ID.test(link.slice(1));
+
+/**
+ * Makes `target` something a topic link can point at and returns the link.
+ * Its id must hold across all sheets of a file, which the ids of relationship
+ * ends do not: such a topic gets a new, random one.
+ */
+export function topicLinkTo(target: MNode): string {
+  if (target.ref === undefined || REL_REF.test(target.ref)) {
+    let id = 'k';
+    for (let i = 0; i < 10; i++) id += Math.floor(Math.random() * 36).toString(36);
+    target.ref = id;
+  }
+  return '#' + target.ref;
+}
+
+/** The topic with the given id in the tree below `root`, if any. */
+export function findByRef(root: MNode, ref: string): MNode | null {
+  if (root.ref === ref) return root;
+  for (const k of root.children) {
+    const hit = findByRef(k, ref);
+    if (hit) return hit;
+  }
+  return null;
+}
 export const MAX_LABELS = 12;
 export const MAX_LABEL = 40;
 export const MAX_TITLE = 120;
@@ -751,7 +793,7 @@ export function cleanWidth(raw: unknown): number | undefined {
   return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(raw)));
 }
 
-/** Map settings built from untrusted data; values that say nothing new (line 1, the default typeface) are dropped. */
+/** Map settings built from untrusted data; a line thickness of 1 says nothing new and is dropped. */
 export function cleanMapStyle(raw: unknown): MapStyle {
   const s: MapStyle = {};
   if (!raw || typeof raw !== 'object') return s;
@@ -762,7 +804,8 @@ export function cleanMapStyle(raw: unknown): MapStyle {
     const line = Math.round(Math.max(MIN_LINE, Math.min(MAX_LINE, r.line)) * 100) / 100;
     if (line !== 1) s.line = line;
   }
-  if (r.font !== 'sans' && FONT_KINDS.includes(r.font as FontKind)) s.font = r.font as FontKind;
+  // "sans" is worth keeping: a theme may come with another typeface.
+  if (FONT_KINDS.includes(r.font as FontKind)) s.font = r.font as FontKind;
   return s;
 }
 
@@ -985,9 +1028,19 @@ export function normalizeMains(root: MNode, paletteSize: number): void {
   }
 }
 
-/** Deep copy as plain data, without the per-position attributes of the top node. */
-export function cloneForPaste(n: MNode): NodeData {
-  const d = toData(n);
+/**
+ * Deep copy as plain data, without the per-position attributes of the top node.
+ * @param withIds keeps the ids that topic links point at: a topic that is cut and pasted takes its links along
+ */
+export function cloneForPaste(n: MNode, withIds = false): NodeData {
+  let ids: Set<MNode> | undefined;
+  if (withIds) {
+    const set = (ids = new Set<MNode>());
+    walk(n, (k) => {
+      if (k.ref !== undefined && !REL_REF.test(k.ref)) set.add(k);
+    });
+  }
+  const d = toData(n, ids);
   delete d.side;
   delete d.summary; // away from its siblings it is an ordinary topic
   if (n.parent && !n.parent.parent && typeof d.color === 'number') delete d.color;

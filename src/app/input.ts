@@ -23,6 +23,7 @@ const GLOBAL_KEYS: Record<string, string> = {
   'S-n': 'newWindow',
   f: 'search',
   'S-f': 'zen',
+  'S-p': 'present',
   '=': 'zoomIn',
   '+': 'zoomIn',
   'S-+': 'zoomIn',
@@ -135,6 +136,12 @@ export class Input {
   private onDown = (e: PointerEvent): void => {
     const app = this.app;
     const [sx, sy] = this.pos(e);
+    if (app.present) {
+      // A presentation: a click moves on, the other button goes back. Nothing is selected or moved.
+      app.editor.focus();
+      if (e.pointerType !== 'touch' || this.touches.size === 0) app.stepPresentation(e.button === 2 ? -1 : e.button === 0 ? 1 : 0);
+      return;
+    }
     if (app.editor.state) app.editor.commit();
     app.editor.focus();
     app.cancelViewAnim();
@@ -144,6 +151,14 @@ export class Input {
       const hit = app.hitTest(app.view.wx(sx), app.view.wy(sy));
       app.finishConnect(hit ? hit.node : null);
       return;
+    }
+    if (app.linking && e.button === 0) {
+      // Linking to a topic: a click on one names it. (The empty canvas still pans, to go looking for it.)
+      const hit = app.hitTest(app.view.wx(sx), app.view.wy(sy));
+      if (hit) {
+        app.finishTopicLink(hit.node);
+        return;
+      }
     }
     if (e.pointerType === 'touch') {
       this.touches.set(e.pointerId, { x: sx, y: sy });
@@ -234,7 +249,7 @@ export class Input {
     if (this.touches.has(e.pointerId)) this.touches.set(e.pointerId, { x: sx, y: sy });
 
     if (this.mode === 'idle') {
-      if (e.pointerType !== 'touch') this.hoverAt(sx, sy);
+      if (e.pointerType !== 'touch' && !app.present) this.hoverAt(sx, sy);
       return;
     }
     if (e.pointerId !== this.pointerId) return;
@@ -331,7 +346,7 @@ export class Input {
     const wx = app.view.wx(sx);
     const wy = app.view.wy(sy);
     app.updateConnect(wx, wy);
-    if (app.connect) app.setHover(app.hitTest(wx, wy));
+    if (app.connect || app.linking) app.setHover(app.hitTest(wx, wy));
     else {
       const { hit, rel } = this.pick(wx, wy);
       app.setHover(hit, rel !== null);
@@ -340,6 +355,7 @@ export class Input {
 
   private onDoubleClick = (e: MouseEvent): void => {
     const app = this.app;
+    if (app.present) return;
     const [sx, sy] = this.pos(e);
     const { hit, rel } = this.pick(app.view.wx(sx), app.view.wy(sy));
     if (hit && hit.part === 'body') {
@@ -356,6 +372,7 @@ export class Input {
 
   private onContext = (e: MouseEvent): void => {
     e.preventDefault();
+    if (this.app.present) return;
     if (this.suppressContextMenu) {
       this.suppressContextMenu = false;
       return;
@@ -410,9 +427,34 @@ export class Input {
 
   // ---------------------------------------------------------------- keyboard
 
+  /** Keys during a presentation: on, back, to either end, and out. Everything else waits. */
+  private presentKey(e: KeyboardEvent, mod: boolean, key: string): void {
+    const app = this.app;
+    if (mod) {
+      // The app's own shortcuts are taken, so that a browser does not act on them. Of those only
+      // zooming and the one that began the presentation do something now (see App.exec).
+      const id = e.altKey ? undefined : GLOBAL_KEYS[(e.shiftKey ? 'S-' : '') + key];
+      if (id) {
+        e.preventDefault();
+        this.run(id);
+      }
+      return;
+    }
+    e.preventDefault();
+    if (key === 'Escape') app.endPresentation();
+    else if (key === 'ArrowRight' || key === 'ArrowDown' || key === ' ' || key === 'Enter' || key === 'PageDown') app.stepPresentation(1);
+    else if (key === 'ArrowLeft' || key === 'ArrowUp' || key === 'Backspace' || key === 'PageUp') app.stepPresentation(-1);
+    else if (key === 'Home') app.stepPresentation(0, 0);
+    else if (key === 'End') app.stepPresentation(0, Infinity);
+  }
+
   private onKey = (e: KeyboardEvent): void => {
     const app = this.app;
     if (app.blockKeys > 0) return;
+    if (app.present) {
+      this.presentKey(e, isMac ? e.metaKey : e.ctrlKey, e.key.length === 1 ? e.key.toLowerCase() : e.key);
+      return;
+    }
     const ed = app.editor;
     const target = e.target instanceof HTMLElement ? e.target : null;
     const inField =
@@ -578,6 +620,7 @@ export class Input {
         return;
       case 'Escape':
         if (app.connect) app.cancelConnect();
+        else if (app.linking) app.cancelTopicLink();
         else if (app.selRel) app.selectRel(null);
         else if (app.sel.length > 1 && app.primary) app.select([app.primary]);
         else this.onIdleEscape();

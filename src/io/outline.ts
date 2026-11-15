@@ -1,6 +1,7 @@
 // Plain-text outlines and Markdown <-> topic trees.
 
 import type { NodeData } from '../core/model.ts';
+import { isTopicLink } from '../core/model.ts';
 
 const HEADING = /^(#{1,6})\s+(.*?)\s*#*$/;
 const BULLET = /^(?:[-*+•・‣◦▪]|\d+[.)])\s+(.*)$/;
@@ -75,7 +76,8 @@ export function parseOutline(text: string): NodeData[] {
     const l = LINK.exec(node.text);
     if (l) {
       node.text = l[1];
-      node.link = l[2];
+      // A link to a place in the same text ("#section") leads nowhere in a map.
+      if (l[2].charAt(0) !== '#') node.link = l[2];
     }
     add(level, node);
   }
@@ -102,7 +104,8 @@ export function toOutline(nodes: readonly NodeData[], depth = 0): string {
 
 function mdText(n: NodeData): string {
   const text = oneLine(n.text) || ' ';
-  return n.link ? `[${text.replace(/[[\]]/g, '\\$&')}](${n.link})` : text;
+  // A link to another topic means nothing outside the map.
+  return n.link && !isTopicLink(n.link) ? `[${text.replace(/[[\]]/g, '\\$&')}](${n.link})` : text;
 }
 
 function mdNote(n: NodeData, indent: string): string {

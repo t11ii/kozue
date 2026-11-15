@@ -1,6 +1,6 @@
 // Themes, typography metrics and color helpers.
 
-import type { ColorRef, FontKind, MapStyle, TopicStyle } from './model.ts';
+import type { ColorRef, FontKind, MapStyle, Shape, TopicStyle } from './model.ts';
 
 export interface Font {
   size: number;
@@ -121,13 +121,18 @@ export interface Theme {
   /** Overrides the automatic black/white choice on solid main topics. */
   mainText?: string;
   sub: 'underline' | 'plain' | 'tint';
-  edge: 'curve' | 'elbow';
+  edge: 'curve' | 'elbow' | 'straight';
   /** Root branches taper from thick to thin. */
   taper: boolean;
-  /** Set by the map's own settings (see themeWith): thickness of the branch lines, 1 = as designed. */
-  lineScale?: number;
-  /** Set by the map's own settings: the typeface of all text. */
+  /** Outline of the central topic and of the main topics, where it is not the usual rounded box. */
+  rootShape?: Shape;
+  mainShape?: Shape;
+  /** Radius of the corners of `elbow` connectors (default 8; 0 for square corners). */
+  corner?: number;
+  /** The typeface of all text; the map's own settings can choose another (see themeWith). */
   typeface?: FontKind;
+  /** Set by the map's own settings: thickness of the branch lines, 1 = as designed. */
+  lineScale?: number;
 }
 
 export const THEMES: readonly Theme[] = [
@@ -222,6 +227,207 @@ export const THEMES: readonly Theme[] = [
     edge: 'curve',
     taper: true,
   },
+  // ---- crisp, for documents and meetings
+  {
+    id: 'kon',
+    name: 'Kon',
+    dark: false,
+    bg: '#ffffff',
+    text: '#1f2937',
+    muted: '#9ca3af',
+    accent: '#1d4ed8',
+    palette: ['#1e3a8a', '#0f766e', '#b45309', '#6d28d9', '#be123c', '#475569'],
+    root: { fill: '#0f172a', text: '#ffffff' },
+    main: 'solid',
+    sub: 'underline',
+    edge: 'elbow',
+    taper: false,
+    rootShape: 'rounded',
+    mainShape: 'rect',
+    corner: 3,
+  },
+  {
+    id: 'tetsu',
+    name: 'Tetsu',
+    dark: false,
+    bg: '#f4f5f7',
+    text: '#1f2933',
+    muted: '#9aa5b1',
+    accent: '#0e7490',
+    palette: ['#334155', '#0e7490', '#52606d', '#0f766e', '#3e4c59', '#155e75'],
+    root: { fill: '#1f2933', text: '#ffffff' },
+    main: 'outline',
+    sub: 'tint',
+    edge: 'elbow',
+    taper: false,
+    rootShape: 'rect',
+    mainShape: 'rect',
+    corner: 0,
+  },
+  {
+    id: 'shiro',
+    name: 'Shiro',
+    dark: false,
+    bg: '#ffffff',
+    text: '#111827',
+    muted: '#9ca3af',
+    accent: '#2563eb',
+    palette: ['#6b7280'],
+    root: { fill: '#111827', text: '#ffffff' },
+    main: 'solid',
+    sub: 'plain',
+    edge: 'elbow',
+    taper: false,
+    rootShape: 'underline',
+    mainShape: 'none',
+    corner: 6,
+  },
+  // ---- color
+  {
+    id: 'akane',
+    name: 'Akane',
+    dark: false,
+    bg: '#fff8f1',
+    text: '#3b2a26',
+    muted: '#b9a79e',
+    accent: '#d9480f',
+    palette: ['#d9480f', '#c2255c', '#e8890c', '#a61e4d', '#b3541e', '#862e9c'],
+    root: { fill: '#7c2d12', text: '#fff8f1' },
+    main: 'solid',
+    sub: 'underline',
+    edge: 'curve',
+    taper: true,
+  },
+  {
+    id: 'umi',
+    name: 'Umi',
+    dark: false,
+    bg: '#f0fafb',
+    text: '#12343b',
+    muted: '#8fb0b6',
+    accent: '#0b7285',
+    palette: ['#0b7285', '#1971c2', '#0ca678', '#1098ad', '#3b5bdb', '#099268'],
+    root: { fill: '#0b3c49', text: '#ffffff' },
+    main: 'tint',
+    sub: 'plain',
+    edge: 'curve',
+    taper: false,
+    mainShape: 'pill',
+  },
+  {
+    id: 'fuji',
+    name: 'Fuji',
+    dark: false,
+    bg: '#faf7ff',
+    text: '#2e2a3b',
+    muted: '#a8a1bd',
+    accent: '#7048e8',
+    palette: ['#7048e8', '#ae3ec9', '#4263eb', '#c2255c', '#5f3dc4', '#9c36b5'],
+    root: { fill: '#3b2f63', text: '#ffffff' },
+    main: 'solid',
+    sub: 'underline',
+    edge: 'curve',
+    taper: true,
+  },
+  {
+    id: 'sakura',
+    name: 'Sakura',
+    dark: false,
+    bg: '#fff7f9',
+    text: '#4a3540',
+    muted: '#c4a9b4',
+    accent: '#e64980',
+    palette: ['#e64980', '#f76707', '#d6336c', '#cc5de8', '#f06595', '#e8590c'],
+    root: { fill: '#d6336c', text: '#ffffff' },
+    main: 'tint',
+    sub: 'plain',
+    edge: 'curve',
+    taper: false,
+    mainShape: 'pill',
+    typeface: 'round',
+  },
+  {
+    id: 'niji',
+    name: 'Niji',
+    dark: false,
+    bg: '#ffffff',
+    text: '#242833',
+    muted: '#a0a5b3',
+    accent: '#4c6ef5',
+    palette: ['#fa5252', '#fd7e14', '#f7a600', '#37b24d', '#15aabf', '#4c6ef5', '#be4bdb', '#e64980'],
+    root: { fill: '#242833', text: '#ffffff' },
+    main: 'solid',
+    sub: 'tint',
+    edge: 'curve',
+    taper: false,
+    mainShape: 'pill',
+  },
+  // ---- paper and ink
+  {
+    id: 'genko',
+    name: 'Genko',
+    dark: false,
+    bg: '#fbf6ea',
+    text: '#2b2622',
+    muted: '#a39b8b',
+    accent: '#b23a2f',
+    palette: ['#2f4b6e', '#8c3b2e', '#4f6b3a', '#7a5a2b', '#5b4a7a', '#2d6b6b'],
+    root: { fill: '#2b2622', text: '#fbf6ea' },
+    main: 'solid',
+    sub: 'underline',
+    edge: 'curve',
+    taper: true,
+    mainShape: 'underline',
+    typeface: 'serif',
+  },
+  // ---- dark
+  {
+    id: 'tsuki',
+    name: 'Tsuki',
+    dark: true,
+    bg: '#0f172a',
+    text: '#e2e8f0',
+    muted: '#64748b',
+    accent: '#fbbf24',
+    palette: ['#fbbf24', '#38bdf8', '#a78bfa', '#34d399', '#fb7185', '#f59e0b'],
+    root: { fill: '#fbbf24', text: '#0f172a' },
+    main: 'outline',
+    sub: 'underline',
+    edge: 'curve',
+    taper: true,
+  },
+  {
+    id: 'hotaru',
+    name: 'Hotaru',
+    dark: true,
+    bg: '#0b0f14',
+    text: '#e6edf3',
+    muted: '#5c6773',
+    accent: '#39ff88',
+    palette: ['#39ff88', '#22d3ee', '#f472b6', '#facc15', '#a78bfa', '#fb923c'],
+    root: { fill: '#39ff88', text: '#0b0f14' },
+    main: 'tint',
+    sub: 'plain',
+    edge: 'straight',
+    taper: false,
+    mainShape: 'pill',
+  },
+  {
+    id: 'kohaku',
+    name: 'Kohaku',
+    dark: true,
+    bg: '#1a1512',
+    text: '#efe6dc',
+    muted: '#7d6f63',
+    accent: '#f59f00',
+    palette: ['#f59f00', '#e8590c', '#d9a05b', '#e9b949', '#c2410c', '#b08968'],
+    root: { fill: '#f59f00', text: '#1a1512' },
+    main: 'solid',
+    mainText: '#1a1512',
+    sub: 'underline',
+    edge: 'curve',
+    taper: true,
+  },
 ];
 
 export const DEFAULT_THEME = 'hinata';
@@ -286,6 +492,7 @@ export function themeWith(base: Theme, s: MapStyle): Theme {
   if (s.background === undefined && s.line === undefined && s.font === undefined) return base;
   const t: Theme = { ...base };
   if (s.line !== undefined) t.lineScale = s.line;
+  // A typeface chosen for the map wins over the one the theme comes with.
   if (s.font !== undefined) t.typeface = s.font;
   const bg = s.background;
   if (bg !== undefined && bg !== base.bg) {

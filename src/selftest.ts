@@ -6,9 +6,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { App } from './app/app.ts';
 import { welcomeDoc } from './app/files.ts';
+import { templates } from './app/templates.ts';
+import { MARKER_GROUPS } from './core/markers.ts';
 import type { MNode } from './core/model.ts';
-import { countDescendants, walk } from './core/model.ts';
+import { Doc, countDescendants, walk } from './core/model.ts';
 import { LAYOUT_KINDS } from './core/structures.ts';
+import { DEFAULT_THEME, THEMES, themeById } from './core/themes.ts';
 import { exportText, importFile, serializeNative } from './io/formats.ts';
 import { toXmind } from './io/xmind.ts';
 import { isTauri, readPath, writeBack } from './platform.ts';
@@ -185,6 +188,24 @@ export async function runSelfTest(app: App, dir: string): Promise<void> {
     app.undo();
     check('undo takes the sheet away again', app.book.sheets.length === 1 && app.doc === firstDoc);
     report.sheets = { bytes: serializeNative(bookData).length };
+
+    // Links to topics: the one in the welcome map, one made here, and how Xmind gets it.
+    const jump = topics.find((n) => n.link?.startsWith('#'));
+    check('the welcome map links to a topic', !!jump && app.linkTarget(jump.link)?.node === styled);
+    if (jump) check('following a link', app.followLink(jump) && app.primary === styled);
+    const far = root.children[root.children.length - 1];
+    app.select([branch]);
+    app.startTopicLink();
+    app.finishTopicLink(far);
+    check('linking', app.linking === null && far.ref !== undefined && branch.link === '#' + far.ref && app.primary === branch);
+    const linked = await importFile('linked.xmind', await toXmind(app.book.toData(), 'selftest'));
+    const farBack = linked.root.children?.find((k) => k.text === far.text)?.id;
+    check(
+      'xmind keeps links to topics',
+      farBack !== undefined && linked.root.children?.find((k) => k.text === branch.text)?.link === '#' + farBack,
+    );
+    app.undo();
+    check('link undone', branch.link === undefined);
     report.exports = {
       png: png.bytes.length,
       pdf: pdf.bytes.length,
@@ -212,6 +233,35 @@ export async function runSelfTest(app: App, dir: string): Promise<void> {
     for (let i = 0; i < 50; i++) app.relayout(false);
     report.layout = { topics: app.count, msPerPass: +((performance.now() - t1) / 50).toFixed(3) };
     report.view = { width: app.view.width, height: app.view.height, zoom: app.view.zoom };
+
+    // Every theme, every marker and every template, drawn in this web view.
+    // (A presentation is left out: it would take the whole screen of whoever runs this.)
+    const themed: Record<string, number> = {};
+    for (const th of THEMES) {
+      app.setTheme(th.id);
+      const out = sceneToSvg(app.exportScene());
+      check(`theme ${th.id} draws`, app.theme.bg === th.bg && out.length > 1000 && !/NaN|undefined/.test(out));
+      themed[th.id] = out.length;
+    }
+    report.themes = themed;
+    const paletteSize = themeById(DEFAULT_THEME).palette.length;
+    const markerRoot = {
+      text: 'Markers',
+      children: MARKER_GROUPS.map((g) => ({ text: g.id, children: g.items.map((id) => ({ text: id, markers: [id] })) })),
+    };
+    app.setDoc(Doc.fromData({ root: markerRoot, layout: 'logic' }, DEFAULT_THEME, paletteSize));
+    const markersPng = await sceneToPng(app.exportScene(), { scale: 2 });
+    await write('selftest-markers.png', markersPng.bytes);
+    check('markers are drawn', markersPng.bytes.length > 20000);
+    const opened: Record<string, number> = {};
+    for (const tpl of templates()) {
+      app.setDoc(Doc.fromData({ root: tpl.root, layout: tpl.layout }, DEFAULT_THEME, paletteSize));
+      const out = sceneToSvg(app.exportScene());
+      check(`template ${tpl.id} opens`, app.doc.layout === tpl.layout && out.length > 300 && !/NaN|undefined/.test(out));
+      opened[tpl.id] = app.count;
+    }
+    report.templates = opened;
+    report.markers = { png: markersPng.bytes.length };
   } catch (e) {
     errors.push('exception: ' + (e instanceof Error ? (e.stack ?? e.message) : String(e)));
   }

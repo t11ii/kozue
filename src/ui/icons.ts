@@ -63,6 +63,11 @@ export const icons = {
   filter: svg('<path d="M3.5 5h13l-5 6v4.2l-3-1.4V11z"/>'),
   swap: svg('<path d="M4 7h11.5M12.5 4l3 3-3 3M16 13H4.5M7.5 10l-3 3 3 3"/>'),
   reset: svg('<path d="M4.5 10a5.5 5.5 0 1 0 1.7-4"/><path d="M4.2 3.4v3h3"/>'),
+  jump: svg('<path d="M4 4v4.5a3 3 0 0 0 3 3h8.5"/><path d="m12 8 3.5 3.5L12 15"/>'),
+  present: svg(
+    '<rect x="2.5" y="3.5" width="15" height="10" rx="1.6"/><path d="M10 13.5v3M6.5 16.5h7"/><path d="m8.6 6.6 3.4 1.9-3.4 1.9z" fill="currentColor"/>',
+  ),
+  chevronLeft: svg('<path d="m12 5-5 5 5 5"/>'),
   star: svg('<path d="m10 3.2 2 4.3 4.6.6-3.4 3.2.9 4.6L10 13.6l-4.1 2.3.9-4.6L3.4 8.1 8 7.5z"/>'),
   strike: svg(
     '<path d="M3.5 10h13"/><path d="M13.4 6.6C13 5.3 11.7 4.5 10 4.5c-2 0-3.4 1-3.4 2.6 0 .8.4 1.5 1.1 1.9M6.4 13.2c.4 1.4 1.8 2.3 3.6 2.3 2.1 0 3.6-1.1 3.6-2.8 0-.3 0-.5-.1-.7"/>',

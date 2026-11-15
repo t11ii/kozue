@@ -3,12 +3,19 @@
 import type { App } from '../app/app.ts';
 import type { ExportOptions, ImageKind } from '../app/files.ts';
 import { APP_VERSION } from '../app/files.ts';
+import type { Template } from '../app/templates.ts';
+import { Doc } from '../core/model.ts';
+import type { Theme } from '../core/themes.ts';
 import type { MsgKey } from '../i18n.ts';
 import { t } from '../i18n.ts';
 import { isMac } from '../platform.ts';
 import { h } from './dom.ts';
 import { logo } from './icons.ts';
 import { keyHint } from './menu.ts';
+import { drawDocThumb } from './thumb.ts';
+
+const TPL_W = 168;
+const TPL_H = 104;
 
 export class Dialogs {
   private app: App;
@@ -178,6 +185,33 @@ export class Dialogs {
     return result === 'ok' ? opts : null;
   }
 
+  /** Shows the templates, each drawn in `theme`; resolves to the chosen one, or null. */
+  async pickTemplate(list: readonly Template[], theme: Theme): Promise<Template | null> {
+    const result = await this.modal((close) => {
+      const grid = h('div', { class: 'tpl-grid' });
+      for (const tpl of list) {
+        const canvas = h('canvas', { style: { width: TPL_W + 'px', height: TPL_H + 'px' } });
+        const card = h('button', { class: 'tpl-card', onclick: () => close(tpl.id) }, canvas, h('span', null, tpl.name));
+        const doc = Doc.fromData({ root: tpl.root, layout: tpl.layout }, theme.id, theme.palette.length);
+        requestAnimationFrame(() => drawDocThumb(canvas, doc, theme, this.app.measurer, TPL_W, TPL_H));
+        grid.append(card);
+      }
+      return h(
+        'div',
+        { class: 'modal templates', role: 'dialog' },
+        h('h2', null, t('templates')),
+        grid,
+        h(
+          'div',
+          { class: 'modal-actions' },
+          h('span', { class: 'spacer' }),
+          h('button', { class: 'btn', onclick: () => close() }, t('cancel')),
+        ),
+      );
+    });
+    return list.find((tpl) => tpl.id === result) ?? null;
+  }
+
   about(): void {
     void this.modal((close) =>
       h(
@@ -234,6 +268,7 @@ export class Dialogs {
           ['scReplace', [k(isMac ? 'mod+alt+f' : 'mod+h')]],
           ['format', [k('mod+i')]],
           ['zen', [k('mod+shift+f'), 'Esc']],
+          ['present', [k('mod+shift+p')]],
           ['nextSheet', [k(isMac ? 'mod+shift+]' : 'mod+pagedown')]],
           ['prevSheet', [k(isMac ? 'mod+shift+[' : 'mod+pageup')]],
         ],

@@ -61,6 +61,24 @@ export function diamond(p: Painter, cx: number, cy: number, rx: number, ry: numb
   p.closePath();
 }
 
+/** A circular arc from angle `a0` to `a1` (radians; larger angles are clockwise on screen), as a path of its own. */
+export function arc(p: Painter, cx: number, cy: number, r: number, a0: number, a1: number): void {
+  const steps = Math.max(1, Math.ceil(Math.abs(a1 - a0) / (Math.PI / 2)));
+  const step = (a1 - a0) / steps;
+  const k = (4 / 3) * Math.tan(step / 4) * r;
+  let a = a0;
+  p.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+  for (let i = 0; i < steps; i++) {
+    const b = a + step;
+    const ax = cx + r * Math.cos(a);
+    const ay = cy + r * Math.sin(a);
+    const bx = cx + r * Math.cos(b);
+    const by = cy + r * Math.sin(b);
+    p.cubicTo(ax - k * Math.sin(a), ay + k * Math.cos(a), bx + k * Math.sin(b), by - k * Math.cos(b), bx, by);
+    a = b;
+  }
+}
+
 /** Clockwise wedge starting at 12 o'clock, covering `frac` of the circle. */
 export function pie(p: Painter, cx: number, cy: number, r: number, frac: number): void {
   const total = Math.max(0, Math.min(1, frac)) * Math.PI * 2;

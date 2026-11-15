@@ -210,8 +210,8 @@ function measureNode(n: MNode, c: Ctx): void {
   let rad = m.radius;
   switch (n.shp) {
     case 'rounded':
-      // By default a central topic with a single line is a capsule.
-      if (st?.shape === 'rounded') rad = ROUNDED[lv];
+      // Unless "rounded" was asked for (by the topic or its theme), a central topic with a single line is a capsule.
+      if ((st?.shape ?? (lv === 0 ? c.theme.rootShape : lv === 1 ? c.theme.mainShape : undefined)) === 'rounded') rad = ROUNDED[lv];
       else if (lv === 0 && ch <= lh) rad = ch / 2 + padY;
       break;
     case 'rect':
@@ -280,9 +280,9 @@ function prepare(n: MNode, depth: number, rdepth: number, kind: LayoutKind, dir:
   // The top two levels are boxes. Subtopics in a row or on an axis need one too; elsewhere the theme decides.
   let box = lv < 2 || c.theme.sub === 'tint' || isRow(dir) || isAxis(dir) || isSpine(dir);
   let ul = !box && c.theme.sub === 'underline' && kind !== 'brace';
-  // The topic's own style has the last word.
+  // The theme may give the top two levels another outline; the topic's own style has the last word.
   const st = n.style;
-  const shape = st?.shape;
+  const shape = st?.shape ?? (lv === 0 ? c.theme.rootShape : lv === 1 ? c.theme.mainShape : undefined);
   if (shape === 'underline' || shape === 'none') {
     box = false;
     ul = shape === 'underline';

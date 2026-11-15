@@ -250,6 +250,11 @@ fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<tauri::menu::Menu<ta
             t("New Window", "新規ウインドウ"),
             Some("CmdOrCtrl+Shift+N"),
         )?)
+        .item(&item(
+            "newFromTemplate",
+            t("New from Template…", "テンプレートから新規…"),
+            None,
+        )?)
         .item(&item("open", t("Open…", "開く…"), Some("CmdOrCtrl+O"))?)
         .separator()
         .item(&item("save", t("Save", "保存"), Some("CmdOrCtrl+S"))?)
@@ -397,6 +402,11 @@ fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<tauri::menu::Menu<ta
             t("Link…", "リンク…"),
             Some("CmdOrCtrl+K"),
         )?)
+        .item(&item(
+            "topicLink",
+            t("Link to a Topic…", "トピックへのリンク…"),
+            None,
+        )?)
         .item(&style)
         .separator()
         .item(&item(
@@ -512,6 +522,11 @@ fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<tauri::menu::Menu<ta
             "zen",
             t("ZEN Mode", "ZEN モード"),
             Some("CmdOrCtrl+Shift+F"),
+        )?)
+        .item(&item(
+            "present",
+            t("Presentation", "プレゼンテーション"),
+            Some("CmdOrCtrl+Shift+P"),
         )?)
         .item(&item(
             "focusBranch",

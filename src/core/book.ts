@@ -3,6 +3,7 @@
 // has a small undo history here.
 
 import type { Doc, DocData, LayoutKind, MapStyle, NodeData, RelData } from './model.ts';
+import { isTopicLink, walk } from './model.ts';
 
 export const MAX_SHEETS = 100;
 export const MAX_SHEET_NAME = 60;
@@ -196,10 +197,23 @@ export class Book {
 
   // ---------------------------------------------------------- serialization
 
+  /** The ids that topic links point at, in all sheets: a link may lead into another sheet. */
+  linked(): Set<string> {
+    const linked = new Set<string>();
+    for (const s of this.sheets) {
+      walk(s.doc.root, (n) => {
+        if (isTopicLink(n.link)) linked.add(n.link.slice(1));
+      });
+    }
+    return linked;
+  }
+
   toData(): FileData {
-    if (this.sheets.length === 1 && !this.sheets[0].name) return this.sheets[0].doc.toData();
+    // What a link points at keeps its id in the file, wherever it is.
+    const linked = this.linked();
+    if (this.sheets.length === 1 && !this.sheets[0].name) return this.sheets[0].doc.toData(linked);
     const sheets = this.sheets.map((s): SheetData => {
-      const d = s.doc.toData();
+      const d = s.doc.toData(linked);
       return {
         ...(s.name ? { name: s.name } : {}),
         theme: d.theme,

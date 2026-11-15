@@ -20,6 +20,9 @@ import {
   cleanStyle,
   cleanWidth,
   cloneForPaste,
+  findByRef,
+  isTopicLink,
+  topicLinkTo,
   balancedSplit,
   fromData,
   inDocOrder,
@@ -113,7 +116,24 @@ export interface Filter {
 }
 
 /** Short messages the app asks the UI to show. */
-export type Notice = 'noSummaryHere' | 'styleCopied' | 'sheetBack' | 'sheetGone';
+export type Notice = 'noSummaryHere' | 'styleCopied' | 'sheetBack' | 'sheetGone' | 'linkGone';
+
+/** A presentation: the map as a whole, then one main branch after the other. */
+export interface Presentation {
+  steps: MNode[];
+  index: number;
+}
+
+/** What a presentation puts aside, to bring back when it ends. */
+interface PresentationBackup {
+  sel: MNode[];
+  panX: number;
+  panY: number;
+  zoom: number;
+}
+
+/** Commands that still run while a presentation is on. */
+const WHILE_PRESENTING: ReadonlySet<string> = new Set(['present', 'zoomIn', 'zoomOut', 'zoomReset', 'fit']);
 
 export interface Hit {
   node: MNode;
@@ -243,6 +263,11 @@ export class App {
   selRel: Rel | null = null;
   /** A relationship being drawn, from a topic to wherever the pointer is. */
   connect: { from: MNode; wx: number; wy: number } | null = null;
+  /** Topics waiting to be linked to the topic that is clicked next — in whichever sheet. */
+  linking: { nodes: MNode[]; sheet: Sheet } | null = null;
+  /** The presentation that is running; nothing can be edited meanwhile. */
+  present: Presentation | null = null;
+  private presentBackup: PresentationBackup | null = null;
   filter: Filter | null = null;
   /** Number of topics that pass the filter. */
   filterCount = 0;
@@ -289,6 +314,7 @@ export class App {
       const first = this.view.width <= 1;
       if (this.view.resize()) {
         if (first) this.fit(false);
+        else this.framePresentation();
         this.requestRender();
         this.emit('view');
       }
@@ -325,6 +351,7 @@ export class App {
   }
 
   exec(id: string): void {
+    if (this.present && !WHILE_PRESENTING.has(id)) return;
     const fn = this.commands.get(id);
     if (fn) fn();
   }
@@ -377,6 +404,8 @@ export class App {
     c('copyStyle', () => this.copyStyle());
     c('pasteStyle', () => this.pasteStyle());
     c('styleToLevel', () => this.applyStyleToLevel());
+    c('present', () => (this.present ? this.endPresentation() : this.startPresentation()));
+    c('topicLink', () => this.startTopicLink());
     c('sheet.new', () => this.addSheet());
     c('sheet.fromTopic', () => this.sheetFromTopic());
     c('sheet.duplicate', () => this.duplicateSheet());
@@ -396,6 +425,7 @@ export class App {
   setBook(book: Book): void {
     this.editor.abort();
     this.book = book;
+    this.linking = null;
     this.attach(book.active);
     this.emit('sheets');
   }
@@ -416,6 +446,8 @@ export class App {
     this.viewAnim = null;
     this.selRel = null;
     this.connect = null;
+    this.present = null;
+    this.presentBackup = null;
     this.filter = null;
     this.keep = null;
     this.filterCount = 0;
@@ -498,7 +530,8 @@ export class App {
   }
 
   duplicateSheet(sheet: Sheet = this.book.active): void {
-    const data = sheet.doc.toData();
+    // The copy keeps the ids that links point at: the links among its own topics stay within it.
+    const data = sheet.doc.toData(this.book.linked());
     const doc = Doc.fromData(data, data.theme, themeById(data.theme).palette.length);
     this.sheetOp(() => this.book.add(new Sheet(doc, sheet.name ? sheet.name + ' 2' : ''), this.book.indexOf(sheet) + 1));
   }
@@ -873,15 +906,18 @@ export class App {
   }
 
   fit(animate = true): void {
+    this.fitTo(this.bounds, 36, 1, animate, 280);
+  }
+
+  /** Brings a rectangle of the map into view, as large as it fits (up to `maxZoom`). */
+  private fitTo(b: Bounds, pad: number, maxZoom: number, animate: boolean, dur: number): void {
     const v = this.view;
-    const b = this.bounds;
     const i = this.insets;
-    const pad = 36;
     const aw = Math.max(80, v.width - i.left - i.right - pad * 2);
     const ah = Math.max(80, v.height - i.top - i.bottom - pad * 2);
-    const z = clamp(Math.min(aw / Math.max(1, b.x1 - b.x0), ah / Math.max(1, b.y1 - b.y0), 1), MIN_ZOOM, 1);
+    const z = clamp(Math.min(aw / Math.max(1, b.x1 - b.x0), ah / Math.max(1, b.y1 - b.y0), maxZoom), MIN_ZOOM, maxZoom);
     const [fx, fy] = this.focusPoint();
-    this.setView(fx - ((b.x0 + b.x1) / 2) * z, fy - ((b.y0 + b.y1) / 2) * z, z, animate, 280);
+    this.setView(fx - ((b.x0 + b.x1) / 2) * z, fy - ((b.y0 + b.y1) / 2) * z, z, animate, dur);
   }
 
   centerOn(n: MNode): void {
@@ -1188,13 +1224,14 @@ export class App {
     const node = hit ? hit.node : null;
     const part = hit ? hit.part : 'body';
     const edge = hit?.edge ?? 1;
-    this.view.canvas.style.cursor = this.connect
-      ? 'crosshair'
-      : part === 'width'
-        ? 'ew-resize'
-        : overRel || (hit && hit.part !== 'body')
-          ? 'pointer'
-          : '';
+    this.view.canvas.style.cursor =
+      this.connect || this.linking
+        ? 'crosshair'
+        : part === 'width'
+          ? 'ew-resize'
+          : overRel || (hit && hit.part !== 'body')
+            ? 'pointer'
+            : '';
     if (node === this.hover && part === this.hoverPart && edge === this.hoverEdge) return;
     this.hover = node;
     this.hoverPart = part;
@@ -2084,6 +2121,162 @@ export class App {
     this.requestRender();
   }
 
+  // ------------------------------------------------------------ topic links
+
+  /** Starts linking the selected topics to another topic: the next topic that is clicked, in any sheet. */
+  startTopicLink(): void {
+    this.editor.commit();
+    if (!this.sel.length) return;
+    this.connect = null;
+    this.linking = { nodes: this.sel.slice(), sheet: this.book.active };
+    this.view.canvas.style.cursor = 'crosshair';
+    this.requestRender();
+    this.emit('mode');
+  }
+
+  cancelTopicLink(): void {
+    if (!this.linking) return;
+    this.linking = null;
+    this.view.canvas.style.cursor = '';
+    this.requestRender();
+    this.emit('mode');
+  }
+
+  /** Links the waiting topics to `target` and returns to them. */
+  finishTopicLink(target: MNode): void {
+    const l = this.linking;
+    if (!l) return;
+    this.linking = null;
+    this.view.canvas.style.cursor = '';
+    const nodes = l.nodes.filter((n) => n !== target && isAttached(n, l.sheet.doc.root));
+    if (nodes.length && this.book.sheets.includes(l.sheet)) {
+      const link = topicLinkTo(target);
+      this.showSheet(l.sheet);
+      const doc = this.doc;
+      doc.run('Link', () => {
+        for (const n of nodes) doc.set(n, 'link', link);
+      });
+      this.setSelection(nodes);
+      this.pruneSelection();
+      if (this.primary) this.reveal(this.primary);
+    }
+    this.emit('mode');
+  }
+
+  /** The topic a topic link points at, and the sheet it is in; null for other links and for a target that is gone. */
+  linkTarget(link: string | undefined): { sheet: Sheet; node: MNode } | null {
+    if (!isTopicLink(link)) return null;
+    const ref = link.slice(1);
+    // The sheet on show first: a duplicated sheet keeps the links among its own topics.
+    const sheets = [this.book.active, ...this.book.sheets.filter((s) => s !== this.book.active)];
+    for (const sheet of sheets) {
+      const node = findByRef(sheet.doc.root, ref);
+      if (node) return { sheet, node };
+    }
+    return null;
+  }
+
+  /** Goes to the topic that the link of `node` points at. Returns false for a link of another kind. */
+  followLink(node: MNode): boolean {
+    if (!isTopicLink(node.link)) return false;
+    const target = this.linkTarget(node.link);
+    if (!target) {
+      this.notify('linkGone');
+      return true;
+    }
+    this.editor.commit();
+    this.showSheet(target.sheet);
+    this.bringOut(target.node);
+    this.setSelection([target.node]);
+    this.centerOn(target.node);
+    return true;
+  }
+
+  // ------------------------------------------------------------ presentation
+
+  /**
+   * Starts a presentation of what is on show: first the whole map, then each
+   * main branch in turn, the rest stepping back. Nothing is changed in the map.
+   */
+  startPresentation(): void {
+    if (this.present) return;
+    this.editor.commit();
+    const top = this.vroot;
+    // A summary topic is shown with the topics it sums up, not as a step of its own.
+    const steps = [top, ...top.children.filter((k) => k.sumN === 0)];
+    const v = this.viewGoal();
+    this.presentBackup = { sel: this.sel.slice(), panX: v.panX, panY: v.panY, zoom: v.zoom };
+    this.present = { steps, index: 0 };
+    this.connect = null;
+    this.linking = null;
+    this.hover = null;
+    this.view.canvas.style.cursor = '';
+    this.setSelection([]);
+    this.showStep(false);
+    this.emit('mode');
+  }
+
+  /** Moves on (1) or back (-1) in the presentation; `to` jumps to a step. */
+  stepPresentation(delta: number, to?: number): void {
+    const p = this.present;
+    if (!p) return;
+    const index = clamp(to ?? p.index + delta, 0, p.steps.length - 1);
+    if (index === p.index) return;
+    p.index = index;
+    this.showStep(true);
+    this.emit('mode');
+  }
+
+  endPresentation(): void {
+    const back = this.presentBackup;
+    if (!this.present) return;
+    this.present = null;
+    this.presentBackup = null;
+    this.refreshFilter();
+    if (back) {
+      const root = this.doc.root;
+      const sel = back.sel.filter((n) => isAttached(n, root));
+      this.setSelection(sel.length ? sel : [this.vroot]);
+      this.pruneSelection();
+      this.setView(back.panX, back.panY, back.zoom, true, 320);
+    }
+    this.requestRender();
+    this.emit('mode');
+  }
+
+  /** Frames the current step of the presentation again (the window changed its size). */
+  framePresentation(): void {
+    if (this.present) this.showStep(false);
+  }
+
+  /** Lights the branch of the current step and moves the view to it. */
+  private showStep(animate: boolean): void {
+    const p = this.present;
+    if (!p) return;
+    const top = this.vroot;
+    const n = p.steps[p.index];
+    if (n === top || !isAttached(n, this.doc.root)) {
+      this.keep = null;
+      this.fitTo(this.bounds, 56, 1.25, animate, 560);
+    } else {
+      const keep = new Set<MNode>();
+      walk(n, (k) => keep.add(k));
+      for (let q: MNode | null = n; q; q = q === top ? null : q.parent) keep.add(q);
+      this.keep = keep;
+      let b: Bounds = { x0: n.bx0, y0: n.by0, x1: n.bx1, y1: n.by1 };
+      // With the central topic in the picture when that costs little room; else the branch alone.
+      const wide: Bounds = {
+        x0: Math.min(b.x0, top.x),
+        y0: Math.min(b.y0, top.y),
+        x1: Math.max(b.x1, top.x + top.w),
+        y1: Math.max(b.y1, top.y + top.h),
+      };
+      if (wide.x1 - wide.x0 <= (b.x1 - b.x0) * 1.7 && wide.y1 - wide.y0 <= (b.y1 - b.y0) * 1.7 + 80) b = wide;
+      this.fitTo(b, 64, 1.7, animate, 560);
+    }
+    this.requestRender();
+  }
+
   // ------------------------------------------------------- branch only / filter
 
   /** Shows only the branch of `node` (null: the whole map again). */
@@ -2175,7 +2368,7 @@ export class App {
     const root = this.doc.root;
     const nodes = inDocOrder(root, topLevel(this.sel));
     if (!nodes.length) return null;
-    const data = nodes.map(cloneForPaste);
+    const data = nodes.map((n) => cloneForPaste(n, true));
     const text = toOutline(data);
     this.clip = { text, data };
     return text;
@@ -2195,9 +2388,13 @@ export class App {
     const root = doc.root;
     const parent = this.primary ?? root;
     const added: MNode[] = [];
+    // A topic that links point at keeps them when it was moved here (cut, then pasted).
+    // While the original is still in the file, the links stay with that one.
+    const byId = new Map<string, MNode>();
+    const nodes = data.map((d) => fromData(d, byId));
+    for (const [ref, n] of byId) if (this.linkTarget('#' + ref)) n.ref = undefined;
     doc.run('Paste', () => {
-      for (const d of data) {
-        const node = fromData(d);
+      for (const node of nodes) {
         doc.insert(node, parent);
         this.settle(node, parent, undefined, parent.children[parent.children.length - 2] ?? null, false, true);
         added.push(node);
@@ -2763,19 +2960,22 @@ export class App {
     const node = this.matches[index];
     if (!node) return;
     this.matchIndex = index;
-    const doc = this.doc;
-    // A match outside the branch on show brings the whole map back.
-    if (this.focus && !isWithin(node, this.focus)) this.setFocus(null);
-    const folded: MNode[] = [];
-    for (let p = node.parent; p; p = p.parent) if (p.folded) folded.push(p);
-    if (folded.length) {
-      doc.run('Expand', () => {
-        for (const p of folded) doc.set(p, 'collapsed', false);
-      });
-    }
+    this.bringOut(node);
     this.setSelection([node]);
     this.reveal(node);
     this.emit('search');
+  }
+
+  /** Makes sure `node` is on show: the whole map comes back when it is outside the branch on show, and what is folded above it opens. */
+  private bringOut(node: MNode): void {
+    if (this.focus && !isWithin(node, this.focus)) this.setFocus(null);
+    const folded: MNode[] = [];
+    for (let p = node.parent; p; p = p.parent) if (p.folded) folded.push(p);
+    if (!folded.length) return;
+    const doc = this.doc;
+    doc.run('Expand', () => {
+      for (const p of folded) doc.set(p, 'collapsed', false);
+    });
   }
 
   clearSearch(): void {

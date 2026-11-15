@@ -4,10 +4,9 @@
 import type { App } from '../app/app.ts';
 import { rememberTheme } from '../app/files.ts';
 import type { TextMeasurer } from '../core/layout.ts';
-import { layoutDoc } from '../core/layout.ts';
 import { MARKER_GROUPS } from '../core/markers.ts';
 import type { FontKind, LayoutKind, MNode, NodeData, Rel, Shape } from '../core/model.ts';
-import { Doc, FONT_KINDS, MAX_WIDTH, MIN_WIDTH, SHAPES, fromData, normalizeMains } from '../core/model.ts';
+import { Doc, FONT_KINDS, MAX_WIDTH, MIN_WIDTH, SHAPES, fromData, isTopicLink, normalizeMains } from '../core/model.ts';
 import type { Theme } from '../core/themes.ts';
 import { BRANCH_KINDS, LAYOUT_KINDS } from '../core/structures.ts';
 import { FONT_STACKS, THEMES, mix, themeById } from '../core/themes.ts';
@@ -15,13 +14,13 @@ import type { MsgKey } from '../i18n.ts';
 import { t } from '../i18n.ts';
 import { openExternal } from '../platform.ts';
 import { markerSvg } from '../render/markers.ts';
-import { CanvasPainter } from '../render/painter.ts';
-import { drawScene, snapPositions } from '../render/scene.ts';
 import { clear, h, keepFocus } from './dom.ts';
 import { icons } from './icons.ts';
+import { drawDocThumb } from './thumb.ts';
 
 const OPEN_KEY = 'kozue.panel';
 const TAB_KEY = 'kozue.panelTab';
+const MARKERS_KEY = 'kozue.markersAll';
 export const PANEL_WIDTH = 272;
 
 type Tab = 'map' | 'topic' | 'style';
@@ -114,34 +113,7 @@ function sampleDoc(theme: Theme): Doc {
 }
 
 function drawThumb(canvas: HTMLCanvasElement, theme: Theme, measurer: TextMeasurer): void {
-  const doc = sampleDoc(theme);
-  const { bounds: b } = layoutDoc(doc, { theme, measurer, epoch: 0, stamp: 1, editing: null });
-  snapPositions(doc.root);
-  const dpr = Math.max(1, window.devicePixelRatio || 1);
-  canvas.width = Math.round(THUMB_W * dpr);
-  canvas.height = Math.round(THUMB_H * dpr);
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = theme.bg;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const s = Math.min((THUMB_W - 12) / (b.x1 - b.x0), (THUMB_H - 12) / (b.y1 - b.y0));
-  ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * (THUMB_W / 2 - ((b.x0 + b.x1) / 2) * s), dpr * (THUMB_H / 2 - ((b.y0 + b.y1) / 2) * s));
-  const p = new CanvasPainter(ctx);
-  p.reset();
-  drawScene(p, doc.root, {
-    theme,
-    metrics: (f) => measurer.metrics(f),
-    textWidth: (f, text) => measurer.width(f, text),
-    clip: null,
-    zoom: s,
-    editing: null,
-    marks: null,
-    markCurrent: null,
-    dim: null,
-    keep: null,
-    stamp: 1,
-    rels: [],
-    selRel: null,
-  });
+  drawDocThumb(canvas, sampleDoc(theme), theme, measurer, THUMB_W, THUMB_H);
 }
 
 const firstLine = (text: string): string => {
@@ -189,6 +161,9 @@ export class Panel {
   private colorFor: Well | null = null;
   private note: HTMLTextAreaElement | null = null;
   private link: HTMLInputElement | null = null;
+  /** Holds the link field, or the topic a link leads to; `linkShown` says which it shows now. */
+  private linkBox: HTMLElement | null = null;
+  private linkShown = '';
   private labels: HTMLInputElement | null = null;
   private frameTitle: HTMLInputElement | null = null;
   private relText: HTMLInputElement | null = null;
@@ -208,7 +183,8 @@ export class Panel {
       if (!this.open) return;
       if (what === 'theme' || what === 'doc') this.syncMap();
       if (what === 'doc' || what === 'mode' || what === 'theme') this.syncFilter();
-      if (what === 'selection' || what === 'doc' || what === 'theme') this.syncTopic();
+      // (Sheets: a link may lead into a sheet that was just renamed or removed.)
+      if (what === 'selection' || what === 'doc' || what === 'theme' || what === 'sheets') this.syncTopic();
     });
   }
 
@@ -256,6 +232,8 @@ export class Panel {
     this.syncTopic();
     this.link?.focus();
     this.link?.select();
+    // (A link to another topic has no field: it is shown, at least.)
+    this.linkBox?.scrollIntoView({ block: 'nearest' });
   }
 
   focusLabels(): void {
@@ -389,7 +367,8 @@ export class Panel {
       // Each name is written in its own typeface.
       const b = h('button', { class: 'seg-btn', 'data-font': kind, style: { fontFamily: FONT_STACKS[kind] } }, t(FONT_LABELS[kind]));
       keepFocus(b);
-      b.addEventListener('click', () => app.setMapStyle({ font: kind === 'sans' ? null : kind }));
+      // The typeface the theme comes with needs no setting of the map's own.
+      b.addEventListener('click', () => app.setMapStyle({ font: kind === (themeById(app.doc.theme).typeface ?? 'sans') ? null : kind }));
       fonts.append(b);
     }
     return h(
@@ -525,7 +504,7 @@ export class Panel {
     const line = doc.style.line;
     const lineId = line === undefined ? 'normal' : line < 1 ? 'thin' : 'bold';
     this.mapLook.querySelectorAll<HTMLElement>('[data-line]').forEach((b) => b.classList.toggle('active', b.dataset.line === lineId));
-    const font = doc.style.font ?? 'sans';
+    const font = doc.style.font ?? themeById(doc.theme).typeface ?? 'sans';
     this.mapLook.querySelectorAll<HTMLElement>('[data-font]').forEach((b) => b.classList.toggle('active', b.dataset.font === font));
     this.syncWells(this.mapWells);
   }
@@ -661,8 +640,12 @@ export class Panel {
         sel.every((n) => n.markers?.includes(id)),
       );
     });
+    // A group that is folded away shows up while one of its markers is on the selection.
+    this.topic.querySelectorAll<HTMLElement>('.marker-row.more').forEach((row) => {
+      row.classList.toggle('has', row.querySelector('.active') !== null);
+    });
     if (this.note && document.activeElement !== this.note && this.note.value !== (node.note ?? '')) this.note.value = node.note ?? '';
-    if (this.link && document.activeElement !== this.link && this.link.value !== (node.link ?? '')) this.link.value = node.link ?? '';
+    this.syncLink(node);
   }
 
   /** Properties of a relationship: its text, its direction, and a way to remove it. */
@@ -671,6 +654,7 @@ export class Panel {
     const box = this.topic;
     clear(box);
     this.note = this.link = this.labels = this.frameTitle = null;
+    this.linkBox = null;
     const text = (this.relText = h('input', { class: 'field', type: 'text', placeholder: t('relTextPlaceholder'), spellcheck: 'false' }));
     text.value = rel.text;
     text.addEventListener('input', () => app.setRelText(rel, text.value));
@@ -702,6 +686,7 @@ export class Panel {
     clear(box);
     this.note = null;
     this.link = null;
+    this.linkBox = null;
     this.labels = null;
     this.frameTitle = null;
     this.relText = null;
@@ -714,9 +699,14 @@ export class Panel {
 
     // Markers
     const ink = app.theme.dark ? '#e6e8ee' : '#3a3f4b';
-    const grid = h('div', { class: 'marker-grid' });
+    // The everyday groups show at once; the rest opens on request (and is remembered).
+    const all = recall(MARKERS_KEY) === '1';
+    const grid = h('div', { class: 'marker-grid' + (all ? ' all' : '') });
     for (const g of MARKER_GROUPS) {
-      const row = h('div', { class: 'marker-row' });
+      const row = h('div', {
+        class: 'marker-row' + (g.more ? ' more' : ''),
+        style: { gridTemplateColumns: `repeat(${Math.max(7, g.items.length)}, 1fr)` },
+      });
       for (const id of g.items) {
         const b = h('button', { class: 'marker-btn', 'data-marker': id, html: markerSvg(id, 18, ink) });
         keepFocus(b);
@@ -725,7 +715,14 @@ export class Panel {
       }
       grid.append(row);
     }
-    box.append(h('label', null, t('markers')), grid);
+    const more = h('button', { class: 'btn small ghost marker-more' }, t(all ? 'markersLess' : 'markersMore'));
+    keepFocus(more);
+    more.addEventListener('click', () => {
+      const open = grid.classList.toggle('all');
+      remember(MARKERS_KEY, open ? '1' : '0');
+      more.textContent = t(open ? 'markersLess' : 'markersMore');
+    });
+    box.append(h('label', null, t('markers')), grid, more);
 
     // To-do
     const todo = h('div', { class: 'seg' });
@@ -848,7 +845,56 @@ export class Panel {
     });
     box.append(h('label', null, t('note')), note);
 
-    // Link
+    // Link: to the web, or to another topic of the file
+    this.linkBox = h('div', { class: 'link-row' });
+    this.linkShown = '';
+    box.append(h('label', null, t('link')), this.linkBox);
+    this.syncLink(node);
+    branchProps();
+  }
+
+  /** The link of a topic: a field for an address, or the topic it leads to. */
+  private syncLink(node: MNode): void {
+    const box = this.linkBox;
+    if (!box) return;
+    const app = this.app;
+    const toTopic = isTopicLink(node.link);
+    const target = toTopic ? app.linkTarget(node.link) : null;
+    let name = '';
+    if (target) {
+      name = firstLine(target.node.text) || t('untitled');
+      // A topic of another sheet goes by the name of that sheet, too.
+      if (target.sheet !== app.book.active) {
+        const sheet = target.sheet;
+        name = `${sheet.name || firstLine(sheet.doc.root.text) || t('sheetN', { n: app.book.indexOf(sheet) + 1 })} › ${name}`;
+      }
+    }
+    const shown = !toTopic ? 'web' : target ? 'to:' + name : 'gone';
+    if (shown === this.linkShown) {
+      const field = this.link;
+      if (field && document.activeElement !== field && field.value !== (node.link ?? '')) field.value = node.link ?? '';
+      return;
+    }
+    this.linkShown = shown;
+    this.link = null;
+    clear(box);
+    if (toTopic) {
+      const remove = h('button', { class: 'icon-btn tip-end', 'data-tip': t('linkRemove'), html: icons.close });
+      keepFocus(remove);
+      remove.addEventListener('click', () => app.setLink(node, ''));
+      if (target) {
+        const go = h(
+          'button',
+          { class: 'link-to', 'data-tip': t('linkGo') },
+          h('span', { class: 'btn-icon', html: icons.jump }),
+          h('span', null, name),
+        );
+        keepFocus(go);
+        go.addEventListener('click', () => app.followLink(node));
+        box.append(go, remove);
+      } else box.append(h('p', { class: 'link-gone muted' }, t('linkGone')), remove);
+      return;
+    }
     const link = (this.link = h('input', {
       class: 'field',
       type: 'text',
@@ -859,7 +905,7 @@ export class Panel {
     link.value = node.link ?? '';
     const commit = (): void => {
       if (link.value.trim() !== (node.link ?? '')) app.setLink(node, link.value);
-      link.value = node.link ?? '';
+      if (this.link === link) link.value = node.link ?? '';
     };
     link.addEventListener('change', commit);
     link.addEventListener('keydown', (e) => {
@@ -872,10 +918,12 @@ export class Panel {
     const go = h('button', { class: 'icon-btn', 'data-tip': t('openLink'), html: icons.external });
     go.addEventListener('click', () => {
       commit();
-      if (node.link) openExternal(node.link);
+      if (node.link && !app.followLink(node)) openExternal(node.link);
     });
-    box.append(h('label', null, t('link')), h('div', { class: 'link-row' }, link, go));
-    branchProps();
+    const toOther = h('button', { class: 'icon-btn tip-end', 'data-tip': t('topicLinkTip'), html: icons.jump });
+    keepFocus(toOther);
+    toOther.addEventListener('click', () => app.exec('topicLink'));
+    box.append(link, go, toOther);
   }
 
   // -------------------------------------------------------------- style page

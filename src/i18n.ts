@@ -18,6 +18,8 @@ const ja = {
 
   // file menu
   new: '新規マップ',
+  newFromTemplate: 'テンプレートから新規…',
+  templates: 'テンプレート',
   newWindow: '新規ウインドウ',
   open: '開く…',
   openRecent: '最近使ったファイル',
@@ -77,9 +79,12 @@ const ja = {
   branchStructure: 'ブランチの構造',
   structInherit: 'マップに合わせる',
 
-  // zen
+  // zen, presentation
   zen: 'ZEN モード',
   zenExit: 'ZEN モードを終了',
+  present: 'プレゼンテーション',
+  presentEnd: '終了',
+  presentWhole: '全体',
 
   // sheets
   sheet: 'シート',
@@ -167,11 +172,20 @@ const ja = {
   color: 'ブランチの色',
   colorAuto: '自動',
   markers: 'マーカー',
+  markersMore: 'ほかのマーカー…',
+  markersLess: '少なく表示',
   note: 'ノート',
   notePlaceholder: 'このトピックのメモ…',
   link: 'リンク',
   linkPlaceholder: 'https://…',
   openLink: 'リンクを開く',
+  topicLink: 'トピックへのリンク…',
+  topicLinkTip: 'ほかのトピックへリンク',
+  linkHint: 'リンク: 行き先のトピックをクリック (ほかのシートも選べます)',
+  linkGone: 'リンク先のトピックが見つかりません',
+  linkGo: 'リンク先へ移動',
+  linkGoMenu: 'リンク先へ移動',
+  linkRemove: 'リンクを外す',
   selectHint: 'トピックを選択すると、マーカー・ノート・リンクなどを設定できます。',
   nTopics: '{n} 個のトピックを選択中',
   todoNone: 'なし',
@@ -293,6 +307,8 @@ const en: Record<MsgKey, string> = {
   format: 'Format',
 
   new: 'New Map',
+  newFromTemplate: 'New from Template…',
+  templates: 'Templates',
   newWindow: 'New Window',
   open: 'Open…',
   openRecent: 'Open Recent',
@@ -352,6 +368,9 @@ const en: Record<MsgKey, string> = {
 
   zen: 'ZEN Mode',
   zenExit: 'Exit ZEN Mode',
+  present: 'Presentation',
+  presentEnd: 'End',
+  presentWhole: 'Overview',
 
   sheet: 'Sheet',
   sheetN: 'Sheet {n}',
@@ -436,11 +455,20 @@ const en: Record<MsgKey, string> = {
   color: 'Branch Color',
   colorAuto: 'Auto',
   markers: 'Markers',
+  markersMore: 'More markers…',
+  markersLess: 'Fewer markers',
   note: 'Note',
   notePlaceholder: 'Notes for this topic…',
   link: 'Link',
   linkPlaceholder: 'https://…',
   openLink: 'Open link',
+  topicLink: 'Link to a Topic…',
+  topicLinkTip: 'Link to another topic',
+  linkHint: 'Link: click the topic to go to (in any sheet)',
+  linkGone: 'The linked topic is gone',
+  linkGo: 'Go to the topic',
+  linkGoMenu: 'Go to Linked Topic',
+  linkRemove: 'Remove the link',
   selectHint: 'Select a topic to set its markers, note, link and more.',
   nTopics: '{n} topics selected',
   todoNone: 'None',

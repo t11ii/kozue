@@ -193,7 +193,7 @@ test('Xmind import reads structure, markers, notes, folding and floating topics'
   assert.deepEqual(x.root, {
     text: 'Central',
     children: [
-      { text: 'A\nB', note: 'memo', markers: ['p5', 't25', 'star'], children: [{ text: 'kid' }], collapsed: true },
+      { text: 'A\nB', note: 'memo', markers: ['p7', 't25', 'star-red', 'people-red'], children: [{ text: 'kid' }], collapsed: true },
       { text: 'web', link: 'https://xmind.app' },
       { text: 'floating' },
     ],

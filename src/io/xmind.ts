@@ -5,7 +5,8 @@
 import type { FileData, SheetData } from '../core/book.ts';
 import { cleanSheetName, isBookData } from '../core/book.ts';
 import type { LayoutKind, MapStyle, NodeData, NumberFormat, Numbering, RelData, Shape, TopicStyle } from '../core/model.ts';
-import { cleanStyle, cleanWidth } from '../core/model.ts';
+import { MARKER_IDS } from '../core/markers.ts';
+import { cleanStyle, cleanWidth, isTopicLink } from '../core/model.ts';
 import type { XmlEl } from './xml.ts';
 import { childOf, childrenOf, findEl, parseXml } from './xml.ts';
 import { unzip, zip } from './zip.ts';
@@ -40,6 +41,7 @@ function importOf(sheets: XmindSheet[]): XmindImport {
   return { ...sheets[0], sheets };
 }
 
+/** Xmind's names for markers that differ from Kozue's. (Many are the same and need no entry.) */
 const IN_MARKERS: Record<string, string> = {
   'task-start': 't0',
   'task-oct': 't25',
@@ -50,52 +52,99 @@ const IN_MARKERS: Record<string, string> = {
   'task-3quar': 't75',
   'task-7oct': 't75',
   'task-done': 'done',
-  'flag-red': 'flag-red',
-  'flag-orange': 'flag-orange',
-  'flag-yellow': 'flag-orange',
-  'flag-green': 'flag-green',
-  'flag-blue': 'flag-blue',
   'flag-dark-blue': 'flag-blue',
-  'flag-purple': 'flag-purple',
+  'flag-dark-green': 'flag-green',
+  'flag-dark-gray': 'flag-gray',
+  'star-orange': 'star',
+  'star-yellow': 'star',
+  'star-dark-blue': 'star-blue',
+  'star-dark-green': 'star-green',
+  'star-dark-gray': 'star-gray',
+  'people-yellow': 'people-orange',
+  'people-dark-blue': 'people-blue',
+  'people-dark-green': 'people-green',
+  'people-dark-gray': 'people-gray',
   'symbol-question': 'q',
   'symbol-exclam': 'ex',
-  'symbol-attention': 'ex',
+  'symbol-attention': 'warn',
   'symbol-info': 'info',
   'symbol-wrong': 'x',
   'symbol-right': 'done',
+  'symbol-plus': 'plus',
+  'symbol-minus': 'minus',
+  'symbol-pin': 'pin',
+  'symbol-idea': 'idea',
+  'symbol-lightning': 'idea',
+  'symbol-lock': 'lock',
+  'symbol-clock': 'clock',
+  'symbol-time': 'clock',
+  'symbol-calendar': 'calendar',
+  'symbol-money': 'money',
+  'symbol-dollar': 'money',
+  'smiley-smile': 'face-smile',
+  'smiley-laugh': 'face-laugh',
+  'smiley-boring': 'face-neutral',
+  'smiley-embarrass': 'face-neutral',
+  'smiley-cry': 'face-sad',
+  'smiley-angry': 'face-angry',
+  'smiley-surprise': 'face-surprise',
   c_symbol_heart: 'heart',
+  c_symbol_like: 'like',
+  c_symbol_dislike: 'dislike',
+  c_symbol_money: 'money',
+  c_symbol_pen: 'idea',
 };
 
+/** Kozue's names for markers that differ from Xmind's. */
 const OUT_MARKERS: Record<string, string> = {
-  p1: 'priority-1',
-  p2: 'priority-2',
-  p3: 'priority-3',
-  p4: 'priority-4',
-  p5: 'priority-5',
   t0: 'task-start',
   t25: 'task-quarter',
   t50: 'task-half',
   t75: 'task-3quar',
   done: 'task-done',
-  'flag-red': 'flag-red',
-  'flag-orange': 'flag-orange',
-  'flag-green': 'flag-green',
-  'flag-blue': 'flag-blue',
-  'flag-purple': 'flag-purple',
   star: 'star-orange',
   heart: 'c_symbol_heart',
+  like: 'c_symbol_like',
+  dislike: 'c_symbol_dislike',
+  money: 'c_symbol_money',
   q: 'symbol-question',
   ex: 'symbol-exclam',
+  warn: 'symbol-attention',
   info: 'symbol-info',
   x: 'symbol-wrong',
+  plus: 'symbol-plus',
+  minus: 'symbol-minus',
+  pin: 'symbol-pin',
+  idea: 'symbol-idea',
+  lock: 'symbol-lock',
+  clock: 'symbol-clock',
+  calendar: 'symbol-calendar',
+  'face-smile': 'smiley-smile',
+  'face-laugh': 'smiley-laugh',
+  'face-neutral': 'smiley-boring',
+  'face-sad': 'smiley-cry',
+  'face-angry': 'smiley-angry',
+  'face-surprise': 'smiley-surprise',
 };
+
+/** Kozue's marker for one of Xmind's, if there is a counterpart. */
+function markerFrom(raw: string): string | undefined {
+  const pr = /^priority-(\d)$/.exec(raw);
+  if (pr) return 'p' + Math.min(9, Math.max(1, Number(pr[1])));
+  const m = IN_MARKERS[raw] ?? raw;
+  return MARKER_IDS.has(m) ? m : undefined;
+}
+
+/** Xmind's marker for one of Kozue's. Flags, stars, people and arrows go by the same names in both. */
+function markerTo(id: string): string {
+  const pr = /^p(\d)$/.exec(id);
+  return pr ? 'priority-' + pr[1] : (OUT_MARKERS[id] ?? id);
+}
 
 function mapMarkers(ids: readonly unknown[]): string[] | undefined {
   const out: string[] = [];
   for (const raw of ids) {
-    if (typeof raw !== 'string') continue;
-    const pr = /^priority-(\d)$/.exec(raw);
-    const m = pr ? 'p' + Math.min(5, Math.max(1, Number(pr[1]))) : raw.startsWith('star-') ? 'star' : IN_MARKERS[raw];
+    const m = typeof raw === 'string' ? markerFrom(raw) : undefined;
     if (m && !out.includes(m)) out.push(m);
   }
   return out.length ? out : undefined;
@@ -112,7 +161,28 @@ function layoutOf(structure: unknown): LayoutKind {
   return 'map';
 }
 
-const webLink = (href: unknown): string | undefined => (typeof href === 'string' && /^(https?:|mailto:)/i.test(href) ? href : undefined);
+/** Xmind's link to another topic of the workbook: "xmind:#" and the id of that topic. */
+const TOPIC_HREF = /^xmind:#(.+)$/;
+
+/** An id as Kozue keeps it. (One that looks like Kozue's own ids for the ends of relationships, "t1", would be taken for such.) */
+const idOf = (id: string): string => (/^t\d+$/.test(id) ? 'x' + id : id);
+
+/**
+ * A link Kozue can follow: to the web, or to another topic of the file.
+ * @param kept the ids that topics keep; a link to a topic that is not in the file is dropped
+ */
+function linkFrom(href: unknown, kept: ReadonlySet<string>): string | undefined {
+  if (typeof href !== 'string') return undefined;
+  const topic = TOPIC_HREF.exec(href);
+  if (topic) {
+    const link = '#' + idOf(topic[1]);
+    return kept.has(topic[1]) && isTopicLink(link) ? link : undefined;
+  }
+  return /^(https?:|mailto:)/i.test(href) ? href : undefined;
+}
+
+/** The ids that topic links point at, as far as those topics are in the file. */
+const targetsOf = (ids: ReadonlySet<string>, hrefs: ReadonlySet<string>): Set<string> => new Set([...hrefs].filter((id) => ids.has(id)));
 
 const cleanTitle = (s: unknown): string => (typeof s === 'string' ? s.replace(/\r\n?/g, '\n') : '');
 
@@ -289,17 +359,26 @@ function mapStyleFrom(props: Json): MapStyle | undefined {
 
 // ------------------------------------------------------------ content.json
 
+/** Collects the ids of a topic and of all below it, and the ids that their topic links point at. */
+function scanJson(raw: unknown, ids: Set<string>, hrefs: Set<string>): void {
+  const t = obj(raw);
+  if (typeof t.id === 'string') ids.add(t.id);
+  const topic = typeof t.href === 'string' ? TOPIC_HREF.exec(t.href) : null;
+  if (topic) hrefs.add(topic[1]);
+  for (const group of Object.values(obj(t.children))) for (const k of arr(group)) scanJson(k, ids, hrefs);
+}
+
 /**
- * @param ends ids of the topics that relationships connect; those keep their id
+ * @param ends ids of the topics that relationships connect or links point at; those keep their id
  * @param isRoot the central topic (which has no structure, boundary or to-do of its own)
  */
 function fromJsonTopic(raw: unknown, ends: ReadonlySet<string>, isRoot = false): NodeData {
   const t = obj(raw);
   const n: NodeData = { text: cleanTitle(t.title) };
-  if (typeof t.id === 'string' && ends.has(t.id)) n.id = t.id;
+  if (typeof t.id === 'string' && ends.has(t.id)) n.id = idOf(t.id);
   const note = obj(obj(t.notes).plain).content;
   if (typeof note === 'string' && note.trim()) n.note = note.replace(/\r\n?/g, '\n').trim();
-  const link = webLink(t.href);
+  const link = linkFrom(t.href, ends);
   if (link) n.link = link;
   const markers = mapMarkers(arr(t.markers).map((m) => obj(m).markerId));
   if (markers) n.markers = markers;
@@ -335,7 +414,8 @@ function fromJsonTopic(raw: unknown, ends: ReadonlySet<string>, isRoot = false):
   return n;
 }
 
-function sheetFromJson(raw: unknown): XmindSheet | null {
+/** @param targets ids that topic links point at, anywhere in the workbook */
+function sheetFromJson(raw: unknown, targets: ReadonlySet<string>): XmindSheet | null {
   const sheet = obj(raw);
   const rt = obj(sheet.rootTopic);
   if (!sheet.rootTopic) return null;
@@ -346,7 +426,8 @@ function sheetFromJson(raw: unknown): XmindSheet | null {
     const title = cleanTitle(r.title).replace(/\s+/g, ' ').trim();
     relationships.push(title ? { from: r.end1Id, to: r.end2Id, text: title } : { from: r.end1Id, to: r.end2Id });
   }
-  const ends = new Set(relationships.flatMap((r) => [r.from, r.to]));
+  const ends = new Set([...relationships.flatMap((r) => [r.from, r.to]), ...targets]);
+  for (const r of relationships) [r.from, r.to] = [idOf(r.from), idOf(r.to)];
   const root = fromJsonTopic(rt, ends, true);
   // Floating topics would otherwise be lost: keep them as main topics.
   const detached = arr(obj(rt.children).detached).map((k) => fromJsonTopic(k, ends));
@@ -380,8 +461,14 @@ function sheetFromJson(raw: unknown): XmindSheet | null {
 
 function fromJson(text: string): XmindImport {
   const sheets: XmindSheet[] = [];
-  for (const raw of arr(JSON.parse(text))) {
-    const sheet = sheetFromJson(raw);
+  const raws = arr(JSON.parse(text));
+  // A link may point at a topic of another sheet: look at all of them first.
+  const ids = new Set<string>();
+  const hrefs = new Set<string>();
+  for (const raw of raws) scanJson(obj(raw).rootTopic, ids, hrefs);
+  const targets = targetsOf(ids, hrefs);
+  for (const raw of raws) {
+    const sheet = sheetFromJson(raw, targets);
     if (sheet) sheets.push(sheet);
   }
   return importOf(sheets);
@@ -410,9 +497,17 @@ function readXmlStyles(text: string | undefined): XmlStyles {
   return styles;
 }
 
+/** Collects the ids of a topic and of all below it, and the ids that their topic links point at. */
+function scanXml(el: XmlEl, ids: Set<string>, hrefs: Set<string>): void {
+  if (el.attrs.id) ids.add(el.attrs.id);
+  const topic = TOPIC_HREF.exec(el.attrs['xlink:href'] ?? '');
+  if (topic) hrefs.add(topic[1]);
+  for (const group of childrenOf(childOf(el, 'children'), 'topics')) for (const t of childrenOf(group, 'topic')) scanXml(t, ids, hrefs);
+}
+
 function fromXmlTopic(el: XmlEl, ends: ReadonlySet<string>, styles: XmlStyles, isRoot = false): NodeData {
   const n: NodeData = { text: cleanTitle(childOf(el, 'title')?.text) };
-  if (el.attrs.id && ends.has(el.attrs.id)) n.id = el.attrs.id;
+  if (el.attrs.id && ends.has(el.attrs.id)) n.id = idOf(el.attrs.id);
   const props = el.attrs['style-id'] ? styles.get(el.attrs['style-id']) : undefined;
   const style = props ? styleFrom(props) : undefined;
   if (style) n.style = style;
@@ -423,7 +518,7 @@ function fromXmlTopic(el: XmlEl, ends: ReadonlySet<string>, styles: XmlStyles, i
   if (numbering) n.numbering = numbering;
   const note = childOf(childOf(el, 'notes'), 'plain')?.text.trim();
   if (note) n.note = note.replace(/\r\n?/g, '\n');
-  const link = webLink(el.attrs['xlink:href']);
+  const link = linkFrom(el.attrs['xlink:href'], ends);
   if (link) n.link = link;
   const markers = mapMarkers(childrenOf(childOf(el, 'marker-refs'), 'marker-ref').map((m) => m.attrs['marker-id']));
   if (markers) n.markers = markers;
@@ -473,6 +568,13 @@ function fromXml(text: string, stylesText?: string): XmindImport {
   const styles = readXmlStyles(stylesText);
   const content = findEl(parseXml(text), 'xmap-content');
   const sheets: XmindSheet[] = [];
+  const ids = new Set<string>();
+  const hrefs = new Set<string>();
+  for (const sheet of childrenOf(content, 'sheet')) {
+    const topic = childOf(sheet, 'topic');
+    if (topic) scanXml(topic, ids, hrefs);
+  }
+  const targets = targetsOf(ids, hrefs);
   for (const sheet of childrenOf(content, 'sheet')) {
     const topic = childOf(sheet, 'topic');
     if (!topic) continue;
@@ -482,7 +584,8 @@ function fromXml(text: string, stylesText?: string): XmindImport {
       const title = cleanTitle(childOf(r, 'title')?.text).replace(/\s+/g, ' ').trim();
       relationships.push(title ? { from: r.attrs.end1, to: r.attrs.end2, text: title } : { from: r.attrs.end1, to: r.attrs.end2 });
     }
-    const ends = new Set(relationships.flatMap((r) => [r.from, r.to]));
+    const ends = new Set([...relationships.flatMap((r) => [r.from, r.to]), ...targets]);
+    for (const r of relationships) [r.from, r.to] = [idOf(r.from), idOf(r.to)];
     const root = fromXmlTopic(topic, ends, styles, true);
     delete root.collapsed;
     const sheetProps = sheet.attrs['style-id'] ? styles.get(sheet.attrs['style-id']) : undefined;
@@ -518,16 +621,26 @@ function newId(): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
+/** Gives every topic with a Kozue id (something points at it) its Xmind id. */
+function assignIds(n: NodeData, ids: Map<string, string>): Map<string, string> {
+  if (n.id !== undefined && !ids.has(n.id)) ids.set(n.id, newId());
+  for (const k of n.children ?? []) assignIds(k, ids);
+  return ids;
+}
+
 /**
- * @param ids fills in which Xmind id each topic with a Kozue id received, for the relationships
+ * @param ids which Xmind id each topic with a Kozue id has in this sheet
+ * @param target the Xmind id of the topic that a topic link points at (by its Kozue id), in this sheet or another
  */
-function toJsonTopic(n: NodeData, ids: Map<string, string>): Json {
-  const id = newId();
-  if (n.id !== undefined) ids.set(n.id, id);
+function toJsonTopic(n: NodeData, ids: ReadonlyMap<string, string>, target: (ref: string) => string | undefined): Json {
+  const id = (n.id !== undefined ? ids.get(n.id) : undefined) ?? newId();
   const t: Json = { id, title: n.text };
   if (n.note) t.notes = { plain: { content: n.note } };
-  if (n.link) t.href = n.link;
-  const markers = (n.markers ?? []).map((m) => OUT_MARKERS[m]).filter(Boolean);
+  if (isTopicLink(n.link)) {
+    const to = target(n.link.slice(1));
+    if (to) t.href = 'xmind:#' + to;
+  } else if (n.link) t.href = n.link;
+  const markers = (n.markers ?? []).map(markerTo);
   if (markers.length) t.markers = markers.map((markerId) => ({ markerId }));
   if (n.labels?.length) t.labels = n.labels.slice();
   if (n.todo !== undefined) t.extensions = [{ provider: TASK, content: { status: n.todo ? 'done' : 'todo' } }];
@@ -543,7 +656,7 @@ function toJsonTopic(n: NodeData, ids: Map<string, string>): Json {
     const boundaries: Json[] = [];
     let run = 0; // ordinary topics since the last summary
     for (const k of n.children) {
-      const kt = toJsonTopic(k, ids);
+      const kt = toJsonTopic(k, ids, target);
       const covers = k.summary !== undefined ? Math.min(k.summary, run) : 0;
       if (covers > 0) {
         summary.push(kt);
@@ -583,7 +696,12 @@ const STRUCTURES: Record<LayoutKind, string> = {
 };
 
 /** One sheet in Xmind's form. `fallback` titles a sheet that has neither a name nor a central topic text. */
-function toJsonSheet(doc: SheetData, fallback: string): Json {
+function toJsonSheet(
+  doc: SheetData,
+  fallback: string,
+  ids: ReadonlyMap<string, string>,
+  target: (ref: string) => string | undefined,
+): Json {
   let root = doc.root;
   let rightCount = 0;
   if (doc.layout === 'map' && root.children) {
@@ -598,8 +716,7 @@ function toJsonSheet(doc: SheetData, fallback: string): Json {
     }
     root = { ...root, children: [...right, ...left] };
   }
-  const ids = new Map<string, string>();
-  const rootTopic = toJsonTopic(root, ids);
+  const rootTopic = toJsonTopic(root, ids, target);
   rootTopic.class = 'topic';
   rootTopic.structureClass = STRUCTURES[doc.layout];
   delete rootTopic.branch;
@@ -623,7 +740,11 @@ function toJsonSheet(doc: SheetData, fallback: string): Json {
 /** Writes a document, or all sheets of a file, as an Xmind workbook. */
 export async function toXmind(data: FileData, appVersion: string): Promise<Uint8Array> {
   const sheets: SheetData[] = isBookData(data) ? data.sheets : [data];
-  const content = sheets.map((sheet, i) => toJsonSheet(sheet, `Sheet ${i + 1}`));
+  // What relationships and links point at gets its id first: a link may point ahead, or into another sheet.
+  const ids = sheets.map((sheet) => assignIds(sheet.root, new Map<string, string>()));
+  const content = sheets.map((sheet, i) =>
+    toJsonSheet(sheet, `Sheet ${i + 1}`, ids[i], (ref) => ids[i].get(ref) ?? ids.find((m) => m.has(ref))?.get(ref)),
+  );
   const enc = new TextEncoder();
   return zip([
     { name: 'content.json', data: enc.encode(JSON.stringify(content)) },
