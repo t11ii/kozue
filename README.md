@@ -16,7 +16,21 @@
 
 ## 使う
 
-### macOS アプリ
+### ダウンロード
+
+[Releases](../../releases/latest) から入手できます。
+
+| 使う環境 | ファイル |
+| --- | --- |
+| macOS 11 以降（Apple シリコン / Intel 共通） | `Kozue_<バージョン>_universal.dmg` |
+| Windows（64 ビット） | `Kozue_<バージョン>_x64-setup.exe`（または `.msi`） |
+| インストールせずにブラウザで使う | `Kozue.html`（Chrome / Edge で開く） |
+
+> 開発元の証明書による署名（Apple の公証、Windows のコード署名）はしていません。初回の起動時だけ、
+> macOS では警告を閉じてから「システム設定 → プライバシーとセキュリティ」の「このまま開く」、
+> Windows では SmartScreen の「詳細情報 → 実行」が必要です。
+
+### 自分でビルドする: macOS
 
 ```sh
 npm install
@@ -25,7 +39,7 @@ npm run app:build        # → src-tauri/target/release/bundle/macos/Kozue.app (
 
 できあがった `Kozue.app` を「アプリケーション」フォルダへ。`.kozue` ファイルのダブルクリックでも開けます。
 
-### Windows アプリ
+### 自分でビルドする: Windows
 
 Windows 上で同じコマンドを実行します（[Rust](https://rustup.rs/) と Node.js、Visual Studio の「C++ によるデスクトップ開発」が必要）。
 
@@ -37,8 +51,7 @@ npm run app:build        # → src-tauri\target\release\bundle\nsis\Kozue_0.1.0_
 手元に Windows の開発環境がなければ、このリポジトリを GitHub に push して Actions の **build** ワークフローを実行すると、
 macOS (.dmg) と Windows (.exe / .msi) のインストーラーが成果物としてダウンロードできます
 （[`.github/workflows/build.yml`](.github/workflows/build.yml)）。
-
-> 署名していないビルドのため、初回起動時に macOS では「右クリック → 開く」、Windows では SmartScreen の「詳細情報 → 実行」が必要です。
+`v0.1.0` のようなタグを push すると、同じファイルを添付したリリースの下書きも作られます（公開は手動です）。
 
 ### インストール不要の単一 HTML 版
 
@@ -180,6 +193,7 @@ npm run format       # Prettier
 `report.json` の `startup` には、ページの読み込み開始から最初のマップが描かれるまでの時間（ミリ秒）も記録されます。
 全画面になるプレゼンテーションと ZEN モードは、画面を占有するのでこのテストには含めていません。
 テストは専用の一時的なデータストアで動くので、ふだん使っているセッション（下書きや設定）には触れません。
+GitHub Actions のビルドでも、macOS と Windows の両方でこのテストを実行します。
 
 ```sh
 KOZUE_SELFTEST=/tmp/kozue-test src-tauri/target/release/bundle/macos/Kozue.app/Contents/MacOS/kozue

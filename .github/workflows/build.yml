@@ -1,5 +1,7 @@
-# Builds the desktop installers for macOS and Windows, plus the single-file web edition.
-# Run it from the Actions tab, or push a tag such as v0.1.0.
+# Builds the desktop installers for macOS and Windows, plus the single-file web edition,
+# and lets the app run its own smoke test on both systems.
+# Run it from the Actions tab, or push a tag such as v0.1.0: a tag also puts the files
+# into a draft release, to be looked over and published by hand.
 name: build
 
 on:
@@ -7,8 +9,12 @@ on:
   push:
     tags: ['v*']
 
+permissions:
+  contents: read
+
 jobs:
   desktop:
+    name: desktop (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
@@ -17,10 +23,14 @@ jobs:
             name: macos
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin
+            bundle: src-tauri/target/universal-apple-darwin/release/bundle/macos/Kozue.app
+            app: src-tauri/target/universal-apple-darwin/release/bundle/macos/Kozue.app/Contents/MacOS/kozue
           - os: windows-latest
             name: windows
             rust-targets: ''
             args: ''
+            bundle: ''
+            app: src-tauri/target/release/kozue.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +48,21 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npx tauri build ${{ matrix.args }}
+      # Without a signature that covers the whole app, a downloaded copy is refused as "damaged".
+      - name: Check the signature
+        if: matrix.bundle != ''
+        run: codesign --verify --deep --strict --verbose=2 "${{ matrix.bundle }}"
+      # The app edits, saves, loads, draws and exports in the real web view, then quits (src/selftest.ts).
+      - name: Smoke test
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          export KOZUE_SELFTEST="$RUNNER_TEMP/selftest"
+          mkdir -p "$KOZUE_SELFTEST"
+          code=0
+          "${{ matrix.app }}" || code=$?
+          cat "$KOZUE_SELFTEST/report.json" || true
+          exit $code
       - uses: actions/upload-artifact@v4
         with:
           name: kozue-${{ matrix.name }}
@@ -60,4 +85,25 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: kozue-html
+          if-no-files-found: error
           path: standalone/Kozue.html
+
+  # A tag puts what was built into a draft release. Publishing it stays a decision made by hand.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop, web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Draft a release with the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find artifacts -type f | sort
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "Kozue ${GITHUB_REF_NAME#v}" --notes "" \
+            $(find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.html' \) | sort)
