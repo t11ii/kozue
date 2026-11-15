@@ -1,7 +1,7 @@
 // Format panel: theme, structure and settings of the map, and the content and
 // the style of the selected topics.
 
-import type { App } from '../app/app.ts';
+import type { App, AppEvent } from '../app/app.ts';
 import { rememberTheme } from '../app/files.ts';
 import type { TextMeasurer } from '../core/layout.ts';
 import { MARKER_GROUPS } from '../core/markers.ts';
@@ -78,6 +78,14 @@ interface ColorOpts {
   pick: (color: string | null, live: boolean) => void;
 }
 
+/** The marker buttons, with the control that unfolds the rarer groups. */
+interface MarkerBox {
+  /** Color of the monochrome markers: it is what a light and a dark panel differ in. */
+  ink: string;
+  grid: HTMLElement;
+  more: HTMLElement;
+}
+
 const recall = (key: string): string | null => {
   try {
     return localStorage.getItem(key);
@@ -95,6 +103,8 @@ const remember = (key: string, value: string): void => {
 
 const THUMB_W = 114;
 const THUMB_H = 70;
+/** Theme previews drawn with one frame: a row of the grid. */
+const THUMBS_PER_FRAME = 3;
 
 /** Miniature map used for theme previews. */
 function sampleDoc(theme: Theme): Doc {
@@ -145,6 +155,11 @@ export class Panel {
   private tabBtns = new Map<Tab, HTMLElement>();
   private pages = new Map<Tab, HTMLElement>();
   private themeCards = new Map<string, HTMLElement>();
+  /** Theme previews that are still blank, and the frame in which the next ones are drawn. */
+  private thumbs: [HTMLCanvasElement, Theme][] = [];
+  private thumbFrame = 0;
+  /** Built once and shown for every selection (see markerButtons). */
+  private markerBox: MarkerBox | null = null;
   private structBtns = new Map<LayoutKind, HTMLElement>();
   private structName!: HTMLElement;
   private filterBox!: HTMLElement;
@@ -179,12 +194,40 @@ export class Panel {
     this.el = el;
     this.build();
     this.toggle(recall(OPEN_KEY) === '1', false);
-    app.on((what) => {
-      if (!this.open) return;
-      if (what === 'theme' || what === 'doc') this.syncMap();
-      if (what === 'doc' || what === 'mode' || what === 'theme') this.syncFilter();
+    app.on((what) => this.sync(what));
+  }
+
+  /**
+   * Brings the page that shows up to date: all of it, or what `what` may have changed.
+   * The pages behind the other tabs are left alone until their tab is chosen.
+   */
+  private sync(what?: AppEvent): void {
+    if (!this.open) return;
+    if (this.tab === 'map') {
+      if (!what || what === 'theme' || what === 'doc') this.syncMap();
+      if (!what || what === 'doc' || what === 'mode' || what === 'theme') this.syncFilter();
+      if (!what) this.drawThumbs();
+    } else if (!what || what === 'selection' || what === 'doc' || what === 'theme' || what === 'sheets') {
       // (Sheets: a link may lead into a sheet that was just renamed or removed.)
-      if (what === 'selection' || what === 'doc' || what === 'theme' || what === 'sheets') this.syncTopic();
+      this.syncTopic();
+    }
+  }
+
+  /**
+   * Draws the theme previews that are still blank, a row with every frame. The map comes
+   * first, and nothing is drawn for a panel (or a page of it) that does not show.
+   */
+  private drawThumbs(): void {
+    if (this.thumbFrame || !this.thumbs.length) return;
+    const step = (): void => {
+      this.thumbFrame = 0;
+      if (!this.open || this.tab !== 'map') return;
+      for (const [canvas, theme] of this.thumbs.splice(0, THUMBS_PER_FRAME)) drawThumb(canvas, theme, this.app.measurer);
+      if (this.thumbs.length) this.thumbFrame = requestAnimationFrame(step);
+    };
+    // Not in the frame that is about to be drawn: that one belongs to the map.
+    this.thumbFrame = requestAnimationFrame(() => {
+      this.thumbFrame = requestAnimationFrame(step);
     });
   }
 
@@ -198,11 +241,8 @@ export class Panel {
     this.open = open;
     this.el.classList.toggle('open', open);
     this.app.insets.right = open ? PANEL_WIDTH + 24 : 16;
-    if (open) {
-      this.syncMap();
-      this.syncFilter();
-      this.syncTopic();
-    } else this.closeColors();
+    if (!open) this.closeColors();
+    else if (changed) this.sync();
     if (user && changed) {
       remember(OPEN_KEY, open ? '1' : '0');
       // Keep the map centered in the space that is left.
@@ -217,19 +257,23 @@ export class Panel {
     remember(TAB_KEY, tab);
     for (const [id, b] of this.tabBtns) b.classList.toggle('active', id === tab);
     for (const [id, page] of this.pages) page.hidden = id !== tab;
+    this.sync();
+  }
+
+  /** Opens the panel on the content or the style of the selection, up to date. */
+  private showTopic(tab: 'topic' | 'style'): void {
+    // The tab first: a panel that opens brings only the page it shows up to date.
+    this.showTab(tab);
+    this.toggle(true);
   }
 
   focusNote(): void {
-    this.toggle(true);
-    this.showTab('topic');
-    this.syncTopic();
+    this.showTopic('topic');
     this.note?.focus();
   }
 
   focusLink(): void {
-    this.toggle(true);
-    this.showTab('topic');
-    this.syncTopic();
+    this.showTopic('topic');
     this.link?.focus();
     this.link?.select();
     // (A link to another topic has no field: it is shown, at least.)
@@ -237,27 +281,21 @@ export class Panel {
   }
 
   focusLabels(): void {
-    this.toggle(true);
-    this.showTab('topic');
-    this.syncTopic();
+    this.showTopic('topic');
     this.labels?.focus();
     this.labels?.select();
   }
 
   /** Puts the cursor into the text field of the selected relationship. */
   focusRel(): void {
-    this.toggle(true);
-    this.showTab('topic');
-    this.syncTopic();
+    this.showTopic('topic');
     this.relText?.focus();
     this.relText?.select();
   }
 
   /** Opens the panel on the style of the selected topics. */
   showStyle(): void {
-    this.toggle(true);
-    this.showTab('style');
-    this.syncTopic();
+    this.showTopic('style');
   }
 
   /** Rebuilds everything (after a language change). */
@@ -268,31 +306,28 @@ export class Panel {
     this.pages.clear();
     this.themeCards.clear();
     this.structBtns.clear();
+    this.markerBox = null;
     this.shown = null;
     this.shownRel = null;
     this.shownCount = -1;
     this.shownFilter = '';
     this.build();
-    if (this.open) {
-      this.syncMap();
-      this.syncFilter();
-      this.syncTopic();
-    }
   }
 
   private build(): void {
     const app = this.app;
     const themes = h('div', { class: 'theme-grid' });
+    this.thumbs = [];
     for (const theme of THEMES) {
-      const canvas = h('canvas', { style: { width: THUMB_W + 'px', height: THUMB_H + 'px' } });
+      // The card has the color of its theme at once; the little map follows (see drawThumbs).
+      const canvas = h('canvas', { style: { width: THUMB_W + 'px', height: THUMB_H + 'px', background: theme.bg } });
       const card = h('button', { class: 'theme-card', title: theme.name }, canvas, h('span', null, theme.name));
       keepFocus(card);
       card.addEventListener('click', () => {
         rememberTheme(theme.id);
         app.setTheme(theme.id);
       });
-      // Thumbnails are cheap, but there is no reason to draw them before the panel is first shown.
-      requestAnimationFrame(() => drawThumb(canvas, theme, app.measurer));
+      this.thumbs.push([canvas, theme]);
       this.themeCards.set(theme.id, card);
       themes.append(card);
     }
@@ -680,27 +715,13 @@ export class Panel {
     );
   }
 
-  private buildTopic(node: MNode | null, count: number): void {
+  /** The grid of marker buttons: built once for a light or a dark panel, then used for every selection. */
+  private markerButtons(): MarkerBox {
     const app = this.app;
-    const box = this.topic;
-    clear(box);
-    this.note = null;
-    this.link = null;
-    this.linkBox = null;
-    this.labels = null;
-    this.frameTitle = null;
-    this.relText = null;
-    if (!node) {
-      box.append(h('p', { class: 'muted hint-text' }, t('selectHint')));
-      return;
-    }
-    if (count > 1) box.append(h('p', { class: 'muted hint-text' }, t('nTopics', { n: count })));
-    const isRoot = node === app.doc.root && count === 1;
-
-    // Markers
     const ink = app.theme.dark ? '#e6e8ee' : '#3a3f4b';
+    if (this.markerBox?.ink === ink) return this.markerBox;
     // The everyday groups show at once; the rest opens on request (and is remembered).
-    const all = recall(MARKERS_KEY) === '1';
+    const all = this.markerBox ? this.markerBox.grid.classList.contains('all') : recall(MARKERS_KEY) === '1';
     const grid = h('div', { class: 'marker-grid' + (all ? ' all' : '') });
     for (const g of MARKER_GROUPS) {
       const row = h('div', {
@@ -722,7 +743,29 @@ export class Panel {
       remember(MARKERS_KEY, open ? '1' : '0');
       more.textContent = t(open ? 'markersLess' : 'markersMore');
     });
-    box.append(h('label', null, t('markers')), grid, more);
+    return (this.markerBox = { ink, grid, more });
+  }
+
+  private buildTopic(node: MNode | null, count: number): void {
+    const app = this.app;
+    const box = this.topic;
+    clear(box);
+    this.note = null;
+    this.link = null;
+    this.linkBox = null;
+    this.labels = null;
+    this.frameTitle = null;
+    this.relText = null;
+    if (!node) {
+      box.append(h('p', { class: 'muted hint-text' }, t('selectHint')));
+      return;
+    }
+    if (count > 1) box.append(h('p', { class: 'muted hint-text' }, t('nTopics', { n: count })));
+    const isRoot = node === app.doc.root && count === 1;
+
+    // Markers
+    const markers = this.markerButtons();
+    box.append(h('label', null, t('markers')), markers.grid, markers.more);
 
     // To-do
     const todo = h('div', { class: 'seg' });

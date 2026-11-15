@@ -310,15 +310,7 @@ export class App {
     this.registerCommands();
     this.setDoc(new Doc(new MNode(''), DEFAULT_THEME, 'map'));
 
-    new ResizeObserver(() => {
-      const first = this.view.width <= 1;
-      if (this.view.resize()) {
-        if (first) this.fit(false);
-        else this.framePresentation();
-        this.requestRender();
-        this.emit('view');
-      }
-    }).observe(canvas);
+    new ResizeObserver(() => this.takeSize()).observe(canvas);
     // Redraw sharply when the window moves to a display with another pixel ratio.
     const watchDpr = (): void => {
       matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener(
@@ -331,6 +323,16 @@ export class App {
       );
     };
     watchDpr();
+  }
+
+  /** Takes over the size of the canvas. The first time, the map is fitted into it. */
+  private takeSize(): void {
+    const first = this.view.width <= 1;
+    if (!this.view.resize()) return;
+    if (first) this.fit(false);
+    else this.framePresentation();
+    this.requestRender();
+    this.emit('view');
   }
 
   // ------------------------------------------------------------------ events
@@ -791,6 +793,10 @@ export class App {
   }
 
   private frame = (now: number): void => {
+    // The first frame comes before the observer has told the size of the canvas. Taking it here puts
+    // the map on the screen with this frame instead of the next one.
+    // (Before `raf` is cleared: what this asks to be drawn is drawn right below.)
+    if (this.view.width <= 1) this.takeSize();
     this.raf = 0;
     const v = this.view;
     let more = false;

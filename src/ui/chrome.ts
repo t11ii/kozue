@@ -460,7 +460,9 @@ export class Chrome {
       list.append(tab);
     });
     bar.append(list, this.button(icons.plus, t('newSheet'), 'sheet.new', 'tip-up tip-start sheet-add'));
-    list.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // Just before the next paint: asking now would make the browser lay out the whole page on the spot.
+    const active = book.sheets.length > 1 ? list.querySelector('.active') : null;
+    if (active) requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
   }
 
   /** Lets the name of a sheet be typed into its tab. */

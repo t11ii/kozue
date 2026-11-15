@@ -29,6 +29,9 @@ html.classList.toggle('is-win', isWindows);
 html.classList.toggle('is-tauri', isTauri);
 html.lang = getLang();
 
+// Asked before the interface is built, so the answer is there by the time it is needed.
+const selfTestAsked = selfTestDir();
+
 const app = new App($<HTMLCanvasElement>('canvas'), $<HTMLTextAreaElement>('editor'), $('mirror'));
 const input = new Input(app);
 const overlays = $('overlays');
@@ -197,7 +200,7 @@ $('stage').addEventListener('scroll', (e) => {
 if (import.meta.env.DEV) Object.assign(window, { kozue: { app, files, panel, chrome } });
 
 // Smoke test mode (desktop only, see selftest.ts) leaves the user's session untouched.
-const selfTest = await selfTestDir();
+const selfTest = await selfTestAsked;
 if (selfTest) {
   files.sessionless = true;
   await runSelfTest(app, selfTest);

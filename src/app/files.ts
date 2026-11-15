@@ -247,6 +247,8 @@ export class Files {
   private app: App;
   private ui: FilesUi;
   private label = windowLabel();
+  /** The file this window was opened for. Asked at once: the answer arrives while the interface is built. */
+  private initial = initialFile();
   private draftTimer = 0;
   private listeners: (() => void)[] = [];
 
@@ -569,7 +571,7 @@ export class Files {
   }
 
   private async restore(): Promise<void> {
-    const path = await initialFile();
+    const path = await this.initial;
     if (path) {
       try {
         await this.load(await readPath(path));

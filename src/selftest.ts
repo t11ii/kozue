@@ -26,7 +26,23 @@ export async function selfTestDir(): Promise<string | null> {
   }
 }
 
+/**
+ * When the next frame is drawn, in ms since the page began to load. Null when none comes:
+ * nothing is drawn while the display sleeps or the window is covered.
+ */
+function nextFrame(): Promise<number | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 1500);
+    requestAnimationFrame(() => {
+      clearTimeout(timer);
+      resolve(Math.round(performance.now()));
+    });
+  });
+}
+
 export async function runSelfTest(app: App, dir: string): Promise<void> {
+  // The interface is built and the shell has answered: this far a launch has come.
+  const readyMs = Math.round(performance.now());
   const enc = new TextEncoder();
   const errors: string[] = [];
   const report: Record<string, unknown> = { userAgent: navigator.userAgent, devicePixelRatio: window.devicePixelRatio };
@@ -44,8 +60,11 @@ export async function runSelfTest(app: App, dir: string): Promise<void> {
       fontMetrics: Number.isFinite(document.createElement('canvas').getContext('2d')!.measureText('M').fontBoundingBoxAscent),
     };
 
-    // Editing through the same entry points the keyboard uses.
+    // How long a first launch takes until its map is on the screen (the panel is closed).
     app.setDoc(welcomeDoc());
+    report.startup = { readyMs, firstFrameMs: await nextFrame() };
+
+    // Editing through the same entry points the keyboard uses.
     const root = app.doc.root;
     const before = countDescendants(root);
     app.select([root]);
